@@ -1,0 +1,29 @@
+name: siga_app
+description: A new Flutter project.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  supabase_flutter: ^2.0.0
+  flutter_dotenv: ^5.1.0
+  provider: ^6.1.1
+  pdf: ^3.10.7
+  printing: ^5.11.1
+  path_provider: ^2.1.1
+  open_file: ^3.3.2
+  intl: ^0.18.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
