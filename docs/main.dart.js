@@ -98897,7 +98897,11 @@ for(s=this.gAN(),r=s.length,q=0,p=0,o=0,n=0,m=0;m<s.length;s.length===r||(0,B.t)
 k=l.x
 if(k==="dispensada")continue
 j=l.ax
-if(k==="concluida"){q+=j==null?0:j;++o}else{p+=j==null?0:j
+if(k==="concluida"){k=j==null?0:j
+j=l.CW
+q+=k*(j==null?1:j);++o}else{k=j==null?0:j
+j=l.CW
+p+=k*(j==null?1:j)
 a1.push(l);++n}}i=0
 h=0
 if(this.d!=="Todos"){for(s=a1.length,g=h,m=0;m<a1.length;a1.length===s||(0,B.t)(a1),++m){l=a1[m]
