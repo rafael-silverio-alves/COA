@@ -1,5 +1,5 @@
 name: siga_app
-description: A new Flutter project.
+description: SIGA App - Sistema de Gestão Agrícola
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,14 +9,31 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  
+  # Supabase
   supabase_flutter: ^2.0.0
+  
+  # Environment
   flutter_dotenv: ^5.1.0
+  
+  # State Management
   provider: ^6.1.1
+  
+  # PDF Generation (compatível com Android)
   pdf: ^3.10.7
   printing: ^5.11.1
+  
+  # File handling (compatível com Android)
   path_provider: ^2.1.1
   open_file: ^3.3.2
+  
+  # Date formatting
   intl: ^0.18.1
+  
+  # Para compartilhar arquivos
+  share_plus: ^7.2.1
+
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:

@@ -41,6 +41,36 @@ class SupabaseService {
     return _supabase;
   }
 
+  String _normalizarString(String texto) {
+    if (texto.isEmpty) return texto;
+    
+    String resultado = texto;
+    
+    final map = {
+      'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a',
+      'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+      'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+      'ó': 'o', 'ò': 'o', 'õ': 'o', 'ô': 'o', 'ö': 'o',
+      'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+      'ç': 'c',
+      'Á': 'A', 'À': 'A', 'Ã': 'A', 'Â': 'A', 'Ä': 'A',
+      'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+      'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+      'Ó': 'O', 'Ò': 'O', 'Õ': 'O', 'Ô': 'O', 'Ö': 'O',
+      'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+      'Ç': 'C'
+    };
+    
+    map.forEach((key, value) {
+      resultado = resultado.replaceAll(key, value);
+    });
+    
+    resultado = resultado.trim();
+    resultado = resultado.replaceAll(RegExp(r'\s+'), ' ');
+    
+    return resultado;
+  }
+
   // ========== AUTENTICAÇÃO ==========
   Future<AuthResponse> signIn(String email, String password) async {
     return await _supabase.auth.signInWithPassword(
@@ -124,105 +154,101 @@ class SupabaseService {
     }
   }
 
-  // ========== OPERAÇÕES EXECUTADAS ==========
+  // ========== OPERAÇÕES EXECUTADAS COM PAGINAÇÃO ==========
   Future<List<OperacaoExecutada>> getOperacoesExecutadas() async {
     try {
-      print('📡 Buscando operações executadas...');
+      print('📡 Buscando operações executadas com paginação...');
       
-      final response = await _supabase
-          .from('operacoes_executadas')
-          .select('''
-            *,
-            safras!inner (
+      int pageSize = 1000;
+      int page = 0;
+      List<Map<String, dynamic>> todasOperacoes = [];
+      bool hasMore = true;
+      
+      while (hasMore) {
+        final from = page * pageSize;
+        final to = (page + 1) * pageSize - 1;
+        
+        print('📄 Carregando página ${page + 1} (registros $from a $to)...');
+        
+        final response = await _supabase
+            .from('operacoes_executadas')
+            .select('''
               *,
-              pivos!inner (*)
-            ),
-            operacoes_padrao!inner (*)
-          ''');
+              safras!inner (
+                *,
+                pivos!inner (*)
+              ),
+              operacoes_padrao!inner (*)
+            ''')
+            .range(from, to);
+        
+        if (response.isEmpty) {
+          hasMore = false;
+          print('📄 Fim dos registros na página ${page + 1}');
+        } else {
+          print('📄 Página ${page + 1}: ${response.length} registros');
+          todasOperacoes.addAll(response);
+          
+          if (response.length < pageSize) {
+            hasMore = false;
+          } else {
+            page++;
+          }
+        }
+      }
       
-      print('📊 Encontradas ${response.length} operações');
+      print('📊 Total de registros carregados: ${todasOperacoes.length}');
       
-      if (response.isEmpty) {
+      if (todasOperacoes.isEmpty) {
         print('⚠️ Nenhuma operação executada encontrada!');
         return [];
       }
       
       final operacoes = <OperacaoExecutada>[];
+      int operacoesIgnoradas = 0;
       
-      for (var data in response) {
+      for (var data in todasOperacoes) {
         try {
           final safraData = data['safras'];
           final pivoData = safraData?['pivos'];
           final opPadraoData = data['operacoes_padrao'];
           
-          if (safraData == null) {
-            print('⚠️ Safra não encontrada para operação ${data['id']}');
+          if (safraData == null || opPadraoData == null) {
+            operacoesIgnoradas++;
             continue;
           }
           
-          if (opPadraoData == null) {
-            print('⚠️ Operação padrão não encontrada para operação ${data['id']}');
-            continue;
-          }
-          
-          // DATA DE PLANTIO DA SAFRA
           final dataPlantio = safraData['data_plantio'] != null 
               ? DateTime.tryParse(safraData['data_plantio']) 
               : null;
           
-          print('📅 === DEBUG OPERAÇÃO ===');
-          print('Operação: ${opPadraoData['nome']}');
-          print('Data plantio da safra: $dataPlantio');
-          
-          // VALORES DA JANELA
           final janelaInicioDias = opPadraoData['janela_inicio'] as int?;
           final janelaFimDias = opPadraoData['janela_fim'] as int?;
           final diasAntesPlantio = opPadraoData['dias_antes_plantio'] as int? ?? 0;
           
-          print('janela_inicio: $janelaInicioDias');
-          print('janela_fim: $janelaFimDias');
-          print('dias_antes_plantio: $diasAntesPlantio');
-          
-          // CALCULAR DATAS DA JANELA
           DateTime? dataInicioJanela;
           DateTime? dataFimJanela;
           
           if (dataPlantio != null) {
-            // Usar janela_inicio se disponível
             if (janelaInicioDias != null) {
               dataInicioJanela = dataPlantio.add(Duration(days: janelaInicioDias));
-              print('Início calculado: $dataInicioJanela (${janelaInicioDias} dias após plantio)');
-            } 
-            // Fallback para dias_antes_plantio
-            else if (diasAntesPlantio != null) {
+            } else if (diasAntesPlantio != null) {
               dataInicioJanela = dataPlantio.add(Duration(days: diasAntesPlantio));
-              print('Início calculado (fallback): $dataInicioJanela (${diasAntesPlantio} dias após plantio)');
             }
             
-            // Usar janela_fim se disponível
             if (janelaFimDias != null) {
               dataFimJanela = dataPlantio.add(Duration(days: janelaFimDias));
-              print('Fim calculado: $dataFimJanela (${janelaFimDias} dias após plantio)');
-            } 
-            // Se não tem janela_fim, calcular padrão
-            else if (dataInicioJanela != null) {
+            } else if (dataInicioJanela != null) {
               dataFimJanela = dataInicioJanela.add(const Duration(days: 7));
-              print('Fim calculado (padrão 7 dias): $dataFimJanela');
             }
           }
           
-          // VALIDAR SE AS DATAS ESTÃO CORRETAS
           if (dataInicioJanela != null && dataFimJanela != null && dataInicioJanela.isAfter(dataFimJanela)) {
-            print('⚠️ ATENÇÃO: Datas invertidas!');
-            print('   Início: $dataInicioJanela');
-            print('   Fim: $dataFimJanela');
-            print('   Trocando as datas...');
             final temp = dataInicioJanela;
             dataInicioJanela = dataFimJanela;
             dataFimJanela = temp;
           }
           
-          // CRIAR OBJETO OPERACAO
           final op = OperacaoExecutada(
             id: data['id'] ?? '',
             safraId: data['safra_id'] ?? '',
@@ -243,28 +269,38 @@ class SupabaseService {
             janelaFimDias: janelaFimDias,
           );
           
-          // PREENCHER DADOS RELACIONADOS
-          op.pivoNome = pivoData?['nome'] as String? ?? 'Sem Pivô';
+          op.pivoNome = _normalizarString(pivoData?['nome'] as String? ?? 'Sem Pivô');
           op.areaTotal = (pivoData?['area_total'] as num?)?.toDouble() ?? 0;
           op.dataPlantio = dataPlantio;
-          
-          op.operacaoNome = opPadraoData['nome'] as String? ?? 'Sem nome';
+          op.operacaoNome = _normalizarString(opPadraoData['nome'] as String? ?? 'Sem nome');
           op.rendimentoHaDia = (opPadraoData['rendimento_ha_dia'] as num?)?.toDouble() ?? 15.0;
           op.diasAntesPlantio = diasAntesPlantio;
           op.numeroPassadas = opPadraoData['numero_passadas'] as int? ?? 1;
           op.intervaloEntrePassadas = opPadraoData['intervalo_entre_passadas'] as int? ?? 0;
           
           operacoes.add(op);
-          print('  ✅ ${op.operacaoNome} - ${op.pivoNome} (${op.getStatusText()})');
-          print('  📅 Janela: ${_formatarData(op.dataInicioJanela)} a ${_formatarData(op.dataFimJanela)}');
-          print('');
           
         } catch (e) {
           print('  ❌ Erro ao processar operação: $e');
+          operacoesIgnoradas++;
         }
       }
       
-      print('✅ Total de operações carregadas: ${operacoes.length}');
+      print('✅ Operações processadas: ${operacoes.length}');
+      if (operacoesIgnoradas > 0) {
+        print('⚠️ Operações ignoradas: $operacoesIgnoradas');
+      }
+      
+      // DIAGNÓSTICO FINAL
+      print('');
+      print('📊 RESUMO FINAL DO CARREGAMENTO:');
+      print('   Total de registros no Supabase: ${todasOperacoes.length}');
+      print('   Total de operações carregadas: ${operacoes.length}');
+      
+      if (operacoes.length < todasOperacoes.length) {
+        print('⚠️ ALERTA: ${todasOperacoes.length - operacoes.length} registros foram ignorados!');
+      }
+      
       return operacoes;
       
     } catch (e) {

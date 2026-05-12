@@ -14,7 +14,7 @@ class AppService extends ChangeNotifier {
   String? _error;
   String? get error => _error;
 
-  Future<void> carregarOperacoes() async {
+  Future<void> carregarOperacoes({bool forceReload = false}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -22,11 +22,26 @@ class AppService extends ChangeNotifier {
     try {
       print('🔄 Carregando operações do Supabase...');
       
+      if (forceReload) {
+        print('⚠️ Forçando recarga completa (limpando cache)');
+        _operacoes.clear();
+      }
+      
       await _supabase.init();
       
       _operacoes = await _supabase.getOperacoesExecutadas();
       
       print('✅ Carregadas ${_operacoes.length} operações');
+      
+      // Log detalhado por pivô para diagnóstico
+      final Map<String, int> contagem = {};
+      for (var op in _operacoes) {
+        contagem[op.pivoNome ?? 'Sem Pivô'] = (contagem[op.pivoNome ?? 'Sem Pivô'] ?? 0) + 1;
+      }
+      print('📊 Operações por pivô:');
+      contagem.forEach((pivo, count) {
+        print('   - $pivo: $count operações');
+      });
       
       if (_operacoes.isEmpty) {
         print('⚠️ NENHUMA operação encontrada!');

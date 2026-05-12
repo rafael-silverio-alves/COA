@@ -18,43 +18,18 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
+  bool _isRefreshing = false;
 
-  // Telas para USUÁRIO COMUM
-  final List<Widget> _telasUsuario = [];
-  final List<String> _titulosUsuario = [];
-  final List<IconData> _iconesUsuario = [];
-
-  // Telas para ADMINISTRADOR
-  final List<Widget> _telasAdmin = [];
-  final List<String> _titulosAdmin = [];
-  final List<IconData> _iconesAdmin = [];
-
-  @override
-  void initState() {
-    super.initState();
+  Future<void> _refreshAllData() async {
+    setState(() => _isRefreshing = true);
+    await widget.service.carregarOperacoes(forceReload: true);
+    setState(() => _isRefreshing = false);
     
-    // Configurar telas do USUÁRIO COMUM
-    _telasUsuario.addAll([
-      PainelScreen(service: widget.service),
-      OperacoesScreen(service: widget.service),
-    ]);
-    _titulosUsuario.addAll(['Painel', 'Operações']);
-    _iconesUsuario.addAll([Icons.dashboard, Icons.agriculture]);
-
-    // Configurar telas do ADMINISTRADOR (todas as telas)
-    _telasAdmin.addAll([
-      PainelScreen(service: widget.service),
-      OperacoesScreen(service: widget.service),
-      const PivosScreen(),
-      const PlantioScreen(),
-    ]);
-    _titulosAdmin.addAll(['Painel', 'Operações', 'Pivôs', 'Novo Plantio']);
-    _iconesAdmin.addAll([
-      Icons.dashboard,
-      Icons.agriculture,
-      Icons.grass,
-      Icons.add_circle,
-    ]);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('✅ Dados recarregados com sucesso!')),
+      );
+    }
   }
 
   @override
@@ -62,24 +37,50 @@ class _MainScreenState extends State<MainScreen> {
     final authProvider = Provider.of<AuthProvider>(context);
     final isAdmin = authProvider.isAdmin;
 
-    // Escolher as listas baseado no papel do usuário
-    final telas = isAdmin ? _telasAdmin : _telasUsuario;
-    final titulos = isAdmin ? _titulosAdmin : _titulosUsuario;
-    final icones = isAdmin ? _iconesAdmin : _iconesUsuario;
+    late final List<Widget> _telas;
+    late final List<String> _titulosAbas;
+    late final List<IconData> _iconesAbas;
 
-    // Garantir que o índice selecionado não ultrapasse o número de telas
-    if (_selectedIndex >= telas.length) {
+    if (isAdmin) {
+      _telas = [
+        PainelScreen(service: widget.service),
+        OperacoesScreen(service: widget.service),
+        const PivosScreen(),
+        const PlantioScreen(),
+      ];
+      _titulosAbas = ['Painel', 'Operações', 'Pivôs', 'Novo Plantio'];
+      _iconesAbas = [Icons.dashboard, Icons.agriculture, Icons.grass, Icons.add_circle];
+    } else {
+      _telas = [
+        PainelScreen(service: widget.service),
+        OperacoesScreen(service: widget.service),
+      ];
+      _titulosAbas = ['Painel', 'Operações'];
+      _iconesAbas = [Icons.dashboard, Icons.agriculture];
+    }
+
+    if (_selectedIndex >= _telas.length) {
       _selectedIndex = 0;
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(titulos[_selectedIndex]),
+        title: Text(_titulosAbas[_selectedIndex]),
         centerTitle: true,
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
         actions: [
-          // Badge do papel do usuário
+          IconButton(
+            icon: _isRefreshing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.refresh),
+            onPressed: _isRefreshing ? null : _refreshAllData,
+            tooltip: 'Recarregar dados',
+          ),
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 8),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -96,7 +97,6 @@ class _MainScreenState extends State<MainScreen> {
               ),
             ),
           ),
-          // Email do usuário
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Center(
@@ -106,7 +106,6 @@ class _MainScreenState extends State<MainScreen> {
               ),
             ),
           ),
-          // Botão de logout
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
@@ -121,7 +120,7 @@ class _MainScreenState extends State<MainScreen> {
       ),
       body: IndexedStack(
         index: _selectedIndex,
-        children: telas,
+        children: _telas,
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
@@ -134,10 +133,10 @@ class _MainScreenState extends State<MainScreen> {
         backgroundColor: Colors.white,
         selectedItemColor: Colors.blue,
         unselectedItemColor: Colors.grey,
-        items: List.generate(telas.length, (index) {
+        items: List.generate(_telas.length, (index) {
           return BottomNavigationBarItem(
-            icon: Icon(icones[index]),
-            label: titulos[index],
+            icon: Icon(_iconesAbas[index]),
+            label: _titulosAbas[index],
           );
         }),
       ),

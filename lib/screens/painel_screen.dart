@@ -85,43 +85,96 @@ class _PainelScreenState extends State<PainelScreen> {
     return resumo;
   }
 
-  Map<String, dynamic> get _insights {
+       Map<String, dynamic> get _insights {
     double totalRealizado = 0;
     double totalAExecutar = 0;
-    double rendimentoTotal = 0;
     int operacoesConcluidas = 0;
     int operacoesPendentes = 0;
-    int operacoesComRendimento = 0;
+    
+    List<OperacaoExecutada> operacoesPendentesList = [];
     
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada') continue;
       
       if (op.status == 'concluida') {
-        totalRealizado += op.areaTotal ?? 0;
+        // Para concluídas, também considerar passadas
+        totalRealizado += (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
         operacoesConcluidas++;
       } else {
-        totalAExecutar += op.areaTotal ?? 0;
-        if (op.rendimentoHaDia != null && op.rendimentoHaDia! > 0) {
-          rendimentoTotal += op.rendimentoHaDia!;
-          operacoesComRendimento++;
-        }
+        // CORREÇÃO: Multiplicar pela área total considerando passadas
+        totalAExecutar += (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+        operacoesPendentesList.add(op);
         operacoesPendentes++;
       }
     }
     
-    final rendimentoMedio = operacoesComRendimento > 0 ? rendimentoTotal / operacoesComRendimento : 0;
-    final diasAExecutar = rendimentoMedio > 0 ? (totalAExecutar / rendimentoMedio).ceil() : 0;
+    // Calcular dias necessários seguindo as regras operacionais
+    int diasAExecutar = 0;
+    double rendimentoTotalReal = 0;
+    
+    if (_filtroPivo != 'Todos') {
+      // CASO 1: Filtrando por pivô específico -> operações são SEQUENCIAIS
+      double maiorRendimento = 0;
+      for (var op in operacoesPendentesList) {
+        diasAExecutar += op.getDiasNecessarios();
+        if ((op.rendimentoHaDia ?? 0) > maiorRendimento) {
+          maiorRendimento = op.rendimentoHaDia ?? 0;
+        }
+      }
+      rendimentoTotalReal = maiorRendimento;
+      
+    } else if (_filtroOperacao != 'Todas') {
+      // CASO 2: Filtrando por operação específica -> todas as ocorrências da mesma operação
+      if (operacoesPendentesList.isNotEmpty) {
+        rendimentoTotalReal = operacoesPendentesList.first.rendimentoHaDia ?? 0;
+      }
+      for (var op in operacoesPendentesList) {
+        diasAExecutar += op.getDiasNecessarios();
+      }
+      
+    } else {
+      // CASO 3: Sem filtros -> operações diferentes podem ser paralelas
+      Map<String, List<OperacaoExecutada>> operacoesPorTipo = {};
+      for (var op in operacoesPendentesList) {
+        final nomeOperacao = op.operacaoNome ?? 'Sem operação';
+        operacoesPorTipo.putIfAbsent(nomeOperacao, () => []).add(op);
+      }
+      
+      // Para cada tipo, soma os dias (sequencial entre pivôs)
+      List<int> diasPorTipo = [];
+      for (var operacoes in operacoesPorTipo.values) {
+        int totalDiasTipo = 0;
+        for (var op in operacoes) {
+          totalDiasTipo += op.getDiasNecessarios();
+        }
+        diasPorTipo.add(totalDiasTipo);
+      }
+      
+      // Tempo total é o maior tempo entre os tipos
+      if (diasPorTipo.isNotEmpty) {
+        diasAExecutar = diasPorTipo.reduce((a, b) => a > b ? a : b);
+      }
+      
+      // Rendimento total = SOMA dos rendimentos de cada TIPO de operação (paralelismo)
+      Set<String> tiposAdicionados = {};
+      for (var op in operacoesPendentesList) {
+        final nomeOperacao = op.operacaoNome ?? 'Sem operação';
+        if (!tiposAdicionados.contains(nomeOperacao)) {
+          tiposAdicionados.add(nomeOperacao);
+          rendimentoTotalReal += op.rendimentoHaDia ?? 0;
+        }
+      }
+    }
     
     return {
       'totalRealizado': totalRealizado,
       'totalAExecutar': totalAExecutar,
       'diasAExecutar': diasAExecutar,
-      'rendimentoMedio': rendimentoMedio,
+      'rendimentoMedio': rendimentoTotalReal,
       'operacoesConcluidas': operacoesConcluidas,
       'operacoesPendentes': operacoesPendentes,
     };
   }
-
   String _formatarDataComAno(DateTime? data) {
     if (data == null) return '---';
     return '${data.day}/${data.month}/${data.year}';
@@ -246,7 +299,20 @@ class _PainelScreenState extends State<PainelScreen> {
     final total = resumo.values.fold(0, (a, b) => a + b);
     final pivos = ['Todos', ...widget.service.getPivosUnicos()];
     final operacoesLista = ['Todas', ...widget.service.getOperacoesUnicas()];
-
+    if (widget.service.operacoes.isNotEmpty) {
+    final curralOps = widget.service.operacoes.where((op) => op.pivoNome == 'Curral Velho 03').toList();
+    print('🔥🔥🔥 TESTE MANUAL 🔥🔥🔥');
+    print('Curral Velho 03: ${curralOps.length} operações');
+    
+    // Listar as primeiras 5 operações
+    for (var i = 0; i < (curralOps.length < 5 ? curralOps.length : 5); i++) {
+      print('  - ${curralOps[i].operacaoNome}');
+    }
+    
+    // Verificar se alguma operação está sendo filtrada por status
+    final filtradas = curralOps.where((op) => op.status != 'dispensada' && op.status != 'concluida').toList();
+    print('Operações não concluídas/não dispensadas: ${filtradas.length}');
+  }
     return RefreshIndicator(
       onRefresh: () => widget.service.carregarOperacoes(),
       child: Stack(

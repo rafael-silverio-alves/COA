@@ -19,7 +19,7 @@ class PdfService {
     final pdf = pw.Document();
     final df = DateFormat('dd/MM/yyyy');
 
-    // Ordenar operações: Concluídas, Atrasadas, Em andamento, Planejadas, Dispensadas
+    // Ordenar operações
     final ordenadas = <OperacaoExecutada>[];
     ordenadas.addAll(operacoes.where((op) => op.status == 'concluida').toList());
     ordenadas.addAll(operacoes.where((op) => op.status == 'atrasada').toList());
@@ -65,11 +65,13 @@ class PdfService {
       );
     }
 
-    // Download
-    final bytes = await pdf.save();
-    final blob = html.Blob([bytes], 'application/pdf');
+    // Gerar PDF e fazer download no navegador
+    final pdfBytes = await pdf.save();
+    
+    // Criar blob e download
+    final blob = html.Blob([pdfBytes], 'application/pdf');
     final url = html.Url.createObjectUrlFromBlob(blob);
-    html.AnchorElement(href: url)
+    final anchor = html.AnchorElement(href: url)
       ..setAttribute('download', 'relatorio_operacoes_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf')
       ..click();
     html.Url.revokeObjectUrl(url);
@@ -78,11 +80,26 @@ class PdfService {
   pw.Widget _titulo() {
     return pw.Column(
       children: [
-        pw.Text('SIGA APP', style: pw.TextStyle(fontSize: 28, fontWeight: pw.FontWeight.bold, color: PdfColors.blue)),
+        pw.Center(
+          child: pw.Text(
+            'SIGA APP',
+            style: pw.TextStyle(fontSize: 28, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
+          ),
+        ),
         pw.SizedBox(height: 5),
-        pw.Text('RELATORIO DE OPERACOES', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+        pw.Center(
+          child: pw.Text(
+            'RELATORIO DE OPERACOES',
+            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+          ),
+        ),
         pw.SizedBox(height: 5),
-        pw.Text('Sistema de Gestao Agricola', style: pw.TextStyle(fontSize: 12, color: PdfColors.grey600)),
+        pw.Center(
+          child: pw.Text(
+            'Sistema de Gestao Agricola',
+            style: pw.TextStyle(fontSize: 12, color: PdfColors.grey600),
+          ),
+        ),
         pw.Divider(),
       ],
     );
@@ -200,7 +217,6 @@ class PdfService {
       children: [
         pw.Text('RESUMO DAS OPERACOES', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
         pw.SizedBox(height: 10),
-        // Cards de quantidade
         pw.Row(
           mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
           children: items.map((item) {
@@ -208,7 +224,6 @@ class PdfService {
           }).toList(),
         ),
         pw.SizedBox(height: 16),
-        // Barra de distribuição
         pw.Text('DISTRIBUICAO POR STATUS', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
         pw.SizedBox(height: 8),
         pw.Container(
@@ -277,9 +292,14 @@ class PdfService {
 
   pw.Widget _listaOperacoes(List<OperacaoExecutada> ops, DateFormat df, int inicio, int fim, int total, int pagina, int totalPaginas) {
     return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      crossAxisAlignment: pw.CrossAxisAlignment.center,
       children: [
-        pw.Text('DETALHAMENTO DAS OPERACOES', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue)),
+        pw.Center(
+          child: pw.Text(
+            'DETALHAMENTO DAS OPERACOES',
+            style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
+          ),
+        ),
         pw.SizedBox(height: 5),
         pw.Divider(),
         pw.SizedBox(height: 8),
@@ -295,9 +315,9 @@ class PdfService {
         pw.Table(
           border: pw.TableBorder.all(color: PdfColors.grey300),
           columnWidths: {
-            0: pw.FlexColumnWidth(2),
-            1: pw.FlexColumnWidth(1.2),
-            2: pw.FlexColumnWidth(1),
+            0: pw.FlexColumnWidth(2.2),
+            1: pw.FlexColumnWidth(1.3),
+            2: pw.FlexColumnWidth(0.9),
             3: pw.FlexColumnWidth(0.8),
             4: pw.FlexColumnWidth(1.8),
             5: pw.FlexColumnWidth(0.9),
@@ -307,20 +327,20 @@ class PdfService {
             pw.TableRow(
               decoration: pw.BoxDecoration(color: PdfColors.grey100),
               children: [
-                _th('Operacao'),
-                _th('Pivo'),
-                _th('Status'),
-                _th('Area (ha)'),
-                _th('Janela de Execucao'),
-                _th('Rendimento'),
-                _th('Dias'),
+                _thCenter('Operacao'),
+                _thCenter('Pivo'),
+                _thCenter('Status'),
+                _thCenter('Area (ha)'),
+                _thCenter('Janela de Execucao'),
+                _thCenter('Rendimento'),
+                _thCenter('Dias'),
               ],
             ),
             ...ops.map((op) => pw.TableRow(
               children: [
                 _tdCenter(_removerAcentos(op.operacaoNome ?? '-')),
                 _tdCenter(_removerAcentos(op.pivoNome ?? '-')),
-                _buildStatusCell(op, df),
+                _buildStatusCellPadrao(op, df),
                 _tdCenter(op.areaTotal?.toStringAsFixed(0) ?? '-'),
                 _tdCenter('${df.format(op.getDataInicioJanelaCalculada())} a ${df.format(op.getDataFimJanelaCalculada())}'),
                 _tdCenter('${op.rendimentoHaDia?.toStringAsFixed(1) ?? 0} ha/dia'),
@@ -341,11 +361,15 @@ class PdfService {
     );
   }
 
-  pw.Widget _th(String text) {
+  pw.Widget _thCenter(String text) {
     return pw.Container(
       alignment: pw.Alignment.center,
       padding: pw.EdgeInsets.all(6),
-      child: pw.Text(text, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9, color: PdfColors.black)),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+        textAlign: pw.TextAlign.center,
+      ),
     );
   }
 
@@ -353,11 +377,11 @@ class PdfService {
     return pw.Container(
       alignment: pw.Alignment.center,
       padding: pw.EdgeInsets.all(5),
-      child: pw.Text(text, style: pw.TextStyle(fontSize: 8, color: PdfColors.black)),
+      child: pw.Text(text, style: pw.TextStyle(fontSize: 8), textAlign: pw.TextAlign.center),
     );
   }
 
-  pw.Widget _buildStatusCell(OperacaoExecutada op, DateFormat df) {
+  pw.Widget _buildStatusCellPadrao(OperacaoExecutada op, DateFormat df) {
     String statusText = op.getStatusText();
     String status = op.status;
     
@@ -377,17 +401,19 @@ class PdfService {
     
     return pw.Container(
       alignment: pw.Alignment.center,
-      padding: pw.EdgeInsets.all(3),
       child: pw.Container(
-        padding: pw.EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        width: 75,
+        height: 22,
+        alignment: pw.Alignment.center,
         decoration: pw.BoxDecoration(
           color: PdfColor(cor.red, cor.green, cor.blue, 0.15),
-          borderRadius: pw.BorderRadius.circular(3),
-          border: isAtrasadaReal && status != 'atrasada' 
-              ? pw.Border.all(color: PdfColors.red, width: 0.5) 
-              : null,
+          borderRadius: pw.BorderRadius.circular(4),
         ),
-        child: pw.Text(statusText, style: pw.TextStyle(fontSize: 7, color: cor, fontWeight: pw.FontWeight.bold)),
+        child: pw.Text(
+          statusText,
+          style: pw.TextStyle(fontSize: 8, color: cor, fontWeight: pw.FontWeight.bold),
+          textAlign: pw.TextAlign.center,
+        ),
       ),
     );
   }

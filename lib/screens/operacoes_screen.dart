@@ -14,12 +14,32 @@ class OperacoesScreen extends StatefulWidget {
 class _OperacoesScreenState extends State<OperacoesScreen> {
   String _filtroPivo = 'Todos';
   String _filtroStatus = 'Todos';
+  String _filtroSafra = 'Todas';  // NOVO FILTRO DE SAFRA
   Map<String, bool> _expandedPivos = {};
+
+  // Lista de safras disponíveis (ano_safra)
+  List<String> get _safrasDisponiveis {
+    final safras = <String>{};
+    for (var op in widget.service.operacoes) {
+      // Buscar o ano da safra a partir da data de plantio
+      if (op.dataPlantio != null) {
+        safras.add(op.dataPlantio!.year.toString());
+      }
+    }
+    final lista = safras.toList();
+    lista.sort((a, b) => b.compareTo(a)); // Mais recente primeiro
+    return ['Todas', ...lista];
+  }
 
   List<OperacaoExecutada> get _operacoesFiltradas {
     return widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
       if (_filtroStatus != 'Todos' && op.getStatusText() != _filtroStatus) return false;
+      // NOVO FILTRO: Filtrar por safra (ano)
+      if (_filtroSafra != 'Todas' && op.dataPlantio != null) {
+        final anoSafra = op.dataPlantio!.year.toString();
+        if (anoSafra != _filtroSafra) return false;
+      }
       return true;
     }).toList();
   }
@@ -33,8 +53,8 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
     
     for (var pivo in map.keys) {
       map[pivo]!.sort((a, b) {
-        final dataA = a.dataInicioJanela ?? DateTime(3000);
-        final dataB = b.dataInicioJanela ?? DateTime(3000);
+        final dataA = a.getDataInicioJanelaCalculada();
+        final dataB = b.getDataInicioJanelaCalculada();
         return dataA.compareTo(dataB);
       });
     }
@@ -55,8 +75,11 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
     final pivos = ['Todos', ...widget.service.getPivosUnicos()];
     final statuses = ['Todos', 'Concluído', 'Em andamento', 'Planejada', 'Atrasada', 'Dispensada'];
+    final safras = _safrasDisponiveis;
     final totalOperacoes = _operacoesFiltradas.length;
     final totalPivos = _operacoesAgrupadas.length;
 
@@ -64,37 +87,97 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
       onRefresh: () => widget.service.carregarOperacoes(),
       child: Column(
         children: [
+          // Filtros - layout responsivo
           Container(
             color: Colors.white,
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _filtroPivo,
-                    decoration: const InputDecoration(labelText: 'Pivô', border: OutlineInputBorder()),
-                    items: pivos.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
-                    onChanged: (v) => setState(() { _filtroPivo = v!; _expandedPivos.clear(); }),
+            padding: EdgeInsets.all(isSmallScreen ? 8 : 12),
+            child: isSmallScreen
+                ? Column(
+                    children: [
+                      DropdownButtonFormField<String>(
+                        value: _filtroPivo,
+                        decoration: const InputDecoration(
+                          labelText: 'Pivô',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        items: pivos.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+                        onChanged: (v) => setState(() { _filtroPivo = v!; _expandedPivos.clear(); }),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: _filtroStatus,
+                        decoration: const InputDecoration(
+                          labelText: 'Status',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        items: statuses.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                        onChanged: (v) => setState(() { _filtroStatus = v!; _expandedPivos.clear(); }),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: _filtroSafra,
+                        decoration: const InputDecoration(
+                          labelText: 'Safra',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        items: safras.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                        onChanged: (v) => setState(() { _filtroSafra = v!; _expandedPivos.clear(); }),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _filtroPivo,
+                          decoration: const InputDecoration(
+                            labelText: 'Pivô',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          items: pivos.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+                          onChanged: (v) => setState(() { _filtroPivo = v!; _expandedPivos.clear(); }),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _filtroStatus,
+                          decoration: const InputDecoration(
+                            labelText: 'Status',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          items: statuses.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                          onChanged: (v) => setState(() { _filtroStatus = v!; _expandedPivos.clear(); }),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _filtroSafra,
+                          decoration: const InputDecoration(
+                            labelText: 'Safra',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          items: safras.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                          onChanged: (v) => setState(() { _filtroSafra = v!; _expandedPivos.clear(); }),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _filtroStatus,
-                    decoration: const InputDecoration(labelText: 'Status', border: OutlineInputBorder()),
-                    items: statuses.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-                    onChanged: (v) => setState(() { _filtroStatus = v!; _expandedPivos.clear(); }),
-                  ),
-                ),
-              ],
-            ),
           ),
+          // Resumo
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('${totalPivos} pivôs', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                Text('$totalPivos pivôs', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(color: Colors.blue.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
@@ -103,6 +186,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
               ],
             ),
           ),
+          // Lista de operações
           Expanded(
             child: _pivosOrdenados.isEmpty
                 ? const Center(
@@ -116,7 +200,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
                     ),
                   )
                 : ListView.builder(
-                    padding: const EdgeInsets.all(12),
+                    padding: EdgeInsets.all(isSmallScreen ? 8 : 12),
                     itemCount: _pivosOrdenados.length,
                     itemBuilder: (context, index) {
                       final pivoNome = _pivosOrdenados[index];
@@ -153,7 +237,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          Text(pivoNome, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                          Text(pivoNome, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                                           const SizedBox(height: 4),
                                           Wrap(
                                             spacing: 8,
@@ -176,7 +260,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
                             ),
                             if (isExpanded)
                               Column(
-                                children: operacoes.map((op) => _buildOperacaoTile(op)).toList(),
+                                children: operacoes.map((op) => _buildOperacaoTile(op, isSmallScreen)).toList(),
                               ),
                           ],
                         ),
@@ -197,21 +281,29 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
     );
   }
 
-  Widget _buildOperacaoTile(OperacaoExecutada op) {
+  Widget _buildOperacaoTile(OperacaoExecutada op, bool isSmallScreen) {
     final cor = op.getStatusColor();
     final diasNecessarios = op.getDiasNecessarios();
     final tempoPrevisto = diasNecessarios == 1 ? '1 dia' : '$diasNecessarios dias';
     final areaTotalComPassadas = op.getAreaTotalComPassadas();
     final dataInicio = op.dataInicioPrimeira;
     final dataConclusao = op.dataFimUltima;
-    final dataInicioJanela = op.dataInicioJanela;
-    final dataFimJanela = op.dataFimJanela;
+    final dataInicioJanela = op.getDataInicioJanelaCalculada();
+    final dataFimJanela = op.getDataFimJanelaCalculada();
+    final dataPlantio = op.dataPlantio;
+    final isInconsistente = op.isRealmenteAtrasada;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(color: cor.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
-      child: ListTile(
-        leading: Container(width: 3, height: 80, color: cor),
+      decoration: BoxDecoration(
+        color: op.corDestaqueInconsistencia,
+        borderRadius: BorderRadius.circular(8),
+        border: isInconsistente && op.status != 'atrasada' 
+            ? Border.all(color: Colors.red, width: 1) 
+            : null,
+      ),
+      child: ExpansionTile(
+        leading: Container(width: 3, height: 40, color: cor),
         title: Text(
           op.operacaoNome ?? '',
           style: TextStyle(
@@ -219,7 +311,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
             decoration: op.status == 'dispensada' ? TextDecoration.lineThrough : null,
           ),
         ),
-        subtitle: Column(
+        subtitle: isSmallScreen ? null : Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 4),
@@ -229,94 +321,115 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
               children: [
                 _infoChip(Icons.square_foot, '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas}x)', cor),
                 _infoChip(Icons.speed, '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia', cor),
-                if (op.status != 'dispensada' && op.status != 'concluida') _infoChip(Icons.timer, tempoPrevisto, cor),
               ],
             ),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 12,
-              runSpacing: 4,
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _infoChip(Icons.calendar_today, 'Janela: ${_formatarDataComAno(dataInicioJanela)} a ${_formatarDataComAno(dataFimJanela)}', cor),
+                if (isInconsistente && op.status != 'atrasada')
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.warning, color: Colors.red, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            op.mensagemInconsistencia ?? 'Operação fora da janela prevista',
+                            style: const TextStyle(color: Colors.red, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                _detalheLinha('Área total', '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas} passada(s))'),
+                _detalheLinha('Rendimento', '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia'),
+                if (op.status != 'dispensada' && op.status != 'concluida')
+                  _detalheLinha('Previsão', tempoPrevisto),
+                _detalheLinha('Janela de execução', 
+                  '${_formatarData(dataInicioJanela)} a ${_formatarData(dataFimJanela)}'),
+                _detalheLinha('Data de plantio', dataPlantio != null ? _formatarData(dataPlantio) : '---'),
+                if (op.status == 'em_andamento' && dataInicio != null)
+                  _detalheLinha('Iniciado em', _formatarData(dataInicio)),
+                if (op.status == 'concluida')
+                  Column(
+                    children: [
+                      if (dataInicio != null)
+                        _detalheLinha('Iniciado em', _formatarData(dataInicio)),
+                      if (dataConclusao != null)
+                        _detalheLinha('Concluído em', _formatarData(dataConclusao)),
+                    ],
+                  ),
+                if (op.numeroPassadas != null && op.numeroPassadas! > 1 && op.status != 'concluida' && op.status != 'dispensada')
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('⚠️ Múltiplas passadas necessárias', 
+                      style: TextStyle(fontSize: 12, color: Colors.orange)),
+                  ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _acaoBotao('Planejar', Icons.assignment, op.status == 'planejada' ? Colors.orange : Colors.grey, () => _atualizarStatus(op, 'planejada')),
+                    _acaoBotao('Iniciar', Icons.play_arrow, op.status == 'em_andamento' ? Colors.blue : Colors.grey, () => _atualizarStatus(op, 'em_andamento')),
+                    _acaoBotao('Atrasada', Icons.warning, op.status == 'atrasada' ? Colors.red : Colors.grey, () => _atualizarStatus(op, 'atrasada')),
+                    _acaoBotao('Concluir', Icons.check_circle, op.status == 'concluida' ? Colors.green : Colors.grey, () => _atualizarStatus(op, 'concluida')),
+                    _acaoBotao('Dispensar', Icons.block, op.status == 'dispensada' ? Colors.grey : Colors.grey.shade400, () => _atualizarStatus(op, 'dispensada')),
+                  ],
+                ),
               ],
             ),
-            // Datas de início e conclusão
-            if (op.status == 'em_andamento' && dataInicio != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  children: [
-                    Icon(Icons.play_arrow, size: 12, color: Colors.blue),
-                    const SizedBox(width: 4),
-                    Text('Iniciado em: ${_formatarDataComAno(dataInicio)}', style: const TextStyle(fontSize: 11, color: Colors.blue)),
-                  ],
-                ),
-              ),
-            if (op.status == 'concluida')
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (dataInicio != null)
-                      Row(
-                        children: [
-                          Icon(Icons.play_arrow, size: 12, color: Colors.green),
-                          const SizedBox(width: 4),
-                          Text('Iniciado em: ${_formatarDataComAno(dataInicio)}', style: const TextStyle(fontSize: 11, color: Colors.green)),
-                        ],
-                      ),
-                    if (dataConclusao != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Row(
-                          children: [
-                            Icon(Icons.check_circle, size: 12, color: Colors.green),
-                            const SizedBox(width: 4),
-                            Text('Concluído em: ${_formatarDataComAno(dataConclusao)}', style: const TextStyle(fontSize: 11, color: Colors.green)),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            if (op.numeroPassadas != null && op.numeroPassadas! > 1 && op.status != 'concluida' && op.status != 'dispensada')
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text('⚠️ Múltiplas passadas necessárias', style: TextStyle(fontSize: 10, color: Colors.orange)),
-              ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: Icon(Icons.assignment, color: op.status == 'planejada' ? Colors.orange : Colors.grey),
-              onPressed: () => _atualizarStatus(op, 'planejada'),
-              tooltip: 'Planejada',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detalheLinha(String label, String valor) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w500),
             ),
-            IconButton(
-              icon: Icon(Icons.play_arrow, color: op.status == 'em_andamento' ? Colors.blue : Colors.grey),
-              onPressed: () => _atualizarStatus(op, 'em_andamento'),
-              tooltip: 'Em andamento',
+          ),
+          Expanded(
+            child: Text(
+              valor,
+              style: const TextStyle(fontSize: 12),
             ),
-            IconButton(
-              icon: Icon(Icons.warning, color: op.status == 'atrasada' ? Colors.red : Colors.grey),
-              onPressed: () => _atualizarStatus(op, 'atrasada'),
-              tooltip: 'Atrasada',
-            ),
-            IconButton(
-              icon: Icon(Icons.check_circle, color: op.status == 'concluida' ? Colors.green : Colors.grey),
-              onPressed: () => _atualizarStatus(op, 'concluida'),
-              tooltip: 'Concluir',
-            ),
-            IconButton(
-              icon: Icon(Icons.block, color: op.status == 'dispensada' ? Colors.grey : Colors.grey.shade400),
-              onPressed: () => _atualizarStatus(op, 'dispensada'),
-              tooltip: 'Dispensada',
-            ),
-          ],
-        ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _acaoBotao(String label, IconData icon, Color cor, VoidCallback onPressed) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16, color: cor),
+      label: Text(label, style: TextStyle(fontSize: 12, color: cor)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: cor.withOpacity(0.1),
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
     );
   }
@@ -336,7 +449,7 @@ class _OperacoesScreenState extends State<OperacoesScreen> {
     );
   }
 
-  String _formatarDataComAno(DateTime? data) {
+  String _formatarData(DateTime? data) {
     if (data == null) return '---';
     return '${data.day}/${data.month}/${data.year}';
   }

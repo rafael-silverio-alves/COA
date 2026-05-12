@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/auth_provider.dart';
 import '../services/app_service.dart';
 import 'main_screen.dart';
@@ -16,6 +17,43 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _rememberMe = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedCredentials();
+  }
+
+  Future<void> _loadSavedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedEmail = prefs.getString('saved_email');
+    final savedPassword = prefs.getString('saved_password');
+    final remember = prefs.getBool('remember_me') ?? false;
+    
+    setState(() {
+      _rememberMe = remember;
+      if (remember && savedEmail != null) {
+        _emailController.text = savedEmail;
+        if (savedPassword != null) {
+          _passwordController.text = savedPassword;
+        }
+      }
+    });
+  }
+
+  Future<void> _saveCredentials(String email, String password) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_rememberMe) {
+      await prefs.setString('saved_email', email);
+      await prefs.setString('saved_password', password);
+      await prefs.setBool('remember_me', true);
+    } else {
+      await prefs.remove('saved_email');
+      await prefs.remove('saved_password');
+      await prefs.setBool('remember_me', false);
+    }
+  }
 
   Future<void> _login() async {
     if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
@@ -38,8 +76,10 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     
     if (result['success'] == true) {
+      await _saveCredentials(_emailController.text, _passwordController.text);
+      
       final appService = AppService();
-      await appService.carregarOperacoes();
+      await appService.carregarOperacoes(forceReload: true);
       
       if (mounted) {
         Navigator.pushReplacement(
@@ -151,7 +191,27 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         obscureText: _obscurePassword,
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _rememberMe,
+                            onChanged: (value) {
+                              setState(() {
+                                _rememberMe = value ?? false;
+                                if (!_rememberMe) {
+                                  _saveCredentials('', '');
+                                }
+                              });
+                            },
+                          ),
+                          const Text(
+                            'Lembrar de mim',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
                         height: 50,
