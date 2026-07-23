@@ -23,6 +23,12 @@ class _PainelScreenState extends State<PainelScreen> {
   bool _isLoading = false;
   bool _isGeneratingPdf = false;
 
+  // Cache para dados filtrados
+  List<OperacaoExecutada>? _operacoesFiltradasCache;
+  String? _lastFiltroPivo;
+  String? _lastFiltroOperacao;
+  DateTimeRange? _lastFiltroData;
+
   final Map<String, Color> _cores = {
     'Concluído': const Color(0xFF22C55E),
     'Em andamento': const Color(0xFF3B82F6),
@@ -32,6 +38,24 @@ class _PainelScreenState extends State<PainelScreen> {
   };
 
   List<OperacaoExecutada> get _operacoesFiltradas {
+    // Verifica se o cache é válido
+    if (_operacoesFiltradasCache != null &&
+        _filtroPivo == _lastFiltroPivo &&
+        _filtroOperacao == _lastFiltroOperacao &&
+        _filtroData == _lastFiltroData) {
+      return _operacoesFiltradasCache!;
+    }
+    
+    // Atualiza cache
+    _lastFiltroPivo = _filtroPivo;
+    _lastFiltroOperacao = _filtroOperacao;
+    _lastFiltroData = _filtroData;
+    
+    _operacoesFiltradasCache = _calcularOperacoesFiltradas();
+    return _operacoesFiltradasCache!;
+  }
+
+  List<OperacaoExecutada> _calcularOperacoesFiltradas() {
     var operacoes = widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
       if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) return false;
@@ -84,100 +108,191 @@ class _PainelScreenState extends State<PainelScreen> {
     }
     return resumo;
   }
-
-       Map<String, dynamic> get _insights {
+   
+  Map<String, dynamic> get _insights {
     double totalRealizado = 0;
     double totalAExecutar = 0;
     int operacoesConcluidas = 0;
     int operacoesPendentes = 0;
+    double rendimentoTotal = 0;
     
-    List<OperacaoExecutada> operacoesPendentesList = [];
-    
+    // Usando um Set para armazenar operações únicas (por nome)
+    Set<String> operacoesUnicas = {};
+
     for (var op in _operacoesFiltradas) {
+      // Ignora dispensadas para os cálculos de área
       if (op.status == 'dispensada') continue;
+
+      final areaComPassadas = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
       
       if (op.status == 'concluida') {
-        // Para concluídas, também considerar passadas
-        totalRealizado += (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+        totalRealizado += areaComPassadas;
         operacoesConcluidas++;
       } else {
-        // CORREÇÃO: Multiplicar pela área total considerando passadas
-        totalAExecutar += (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
-        operacoesPendentesList.add(op);
+        totalAExecutar += areaComPassadas;
         operacoesPendentes++;
       }
+
+      // SOMA o rendimento de cada operação ÚNICA
+      final nomeOperacao = op.operacaoNome ?? '';
+      if ((op.rendimentoHaDia ?? 0) > 0 && !operacoesUnicas.contains(nomeOperacao)) {
+        rendimentoTotal += op.rendimentoHaDia!;
+        operacoesUnicas.add(nomeOperacao);
+      }
     }
-    
-    // Calcular dias necessários seguindo as regras operacionais
+
     int diasAExecutar = 0;
-    double rendimentoTotalReal = 0;
-    
-    if (_filtroPivo != 'Todos') {
-      // CASO 1: Filtrando por pivô específico -> operações são SEQUENCIAIS
-      double maiorRendimento = 0;
-      for (var op in operacoesPendentesList) {
-        diasAExecutar += op.getDiasNecessarios();
-        if ((op.rendimentoHaDia ?? 0) > maiorRendimento) {
-          maiorRendimento = op.rendimentoHaDia ?? 0;
-        }
-      }
-      rendimentoTotalReal = maiorRendimento;
-      
-    } else if (_filtroOperacao != 'Todas') {
-      // CASO 2: Filtrando por operação específica -> todas as ocorrências da mesma operação
-      if (operacoesPendentesList.isNotEmpty) {
-        rendimentoTotalReal = operacoesPendentesList.first.rendimentoHaDia ?? 0;
-      }
-      for (var op in operacoesPendentesList) {
-        diasAExecutar += op.getDiasNecessarios();
-      }
-      
-    } else {
-      // CASO 3: Sem filtros -> operações diferentes podem ser paralelas
-      Map<String, List<OperacaoExecutada>> operacoesPorTipo = {};
-      for (var op in operacoesPendentesList) {
-        final nomeOperacao = op.operacaoNome ?? 'Sem operação';
-        operacoesPorTipo.putIfAbsent(nomeOperacao, () => []).add(op);
-      }
-      
-      // Para cada tipo, soma os dias (sequencial entre pivôs)
-      List<int> diasPorTipo = [];
-      for (var operacoes in operacoesPorTipo.values) {
-        int totalDiasTipo = 0;
-        for (var op in operacoes) {
-          totalDiasTipo += op.getDiasNecessarios();
-        }
-        diasPorTipo.add(totalDiasTipo);
-      }
-      
-      // Tempo total é o maior tempo entre os tipos
-      if (diasPorTipo.isNotEmpty) {
-        diasAExecutar = diasPorTipo.reduce((a, b) => a > b ? a : b);
-      }
-      
-      // Rendimento total = SOMA dos rendimentos de cada TIPO de operação (paralelismo)
-      Set<String> tiposAdicionados = {};
-      for (var op in operacoesPendentesList) {
-        final nomeOperacao = op.operacaoNome ?? 'Sem operação';
-        if (!tiposAdicionados.contains(nomeOperacao)) {
-          tiposAdicionados.add(nomeOperacao);
-          rendimentoTotalReal += op.rendimentoHaDia ?? 0;
-        }
-      }
+    if (rendimentoTotal > 0 && totalAExecutar > 0) {
+      diasAExecutar = (totalAExecutar / rendimentoTotal).ceil();
     }
-    
+
     return {
       'totalRealizado': totalRealizado,
       'totalAExecutar': totalAExecutar,
       'diasAExecutar': diasAExecutar,
-      'rendimentoMedio': rendimentoTotalReal,
+      'rendimentoMedio': rendimentoTotal, // SOMA dos rendimentos de operações únicas
       'operacoesConcluidas': operacoesConcluidas,
       'operacoesPendentes': operacoesPendentes,
+      'totalOperacoesUnicas': operacoesUnicas.length,
     };
   }
+
+  Map<String, dynamic> get _progressoPivos {
+    final Map<String, dynamic> resultado = {};
+
+    // Primeiro, vamos identificar quais pivôs têm plantio no período filtrado
+    Set<String> pivosNoPeriodo = {};
+    
+    for (final op in widget.service.operacoes) {
+      // Não filtra dispensadas para o resumo de plantios
+      // Aplica filtro de pivô
+      if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) continue;
+      
+      // Verifica se o plantio está no período filtrado
+      if (_filtroData != null) {
+        if (op.dataPlantio == null) continue;
+        if (op.dataPlantio!.isBefore(_filtroData!.start) ||
+            op.dataPlantio!.isAfter(_filtroData!.end)) {
+          continue;
+        }
+      }
+      
+      final nomePivo = op.pivoNome ?? 'Sem pivô';
+      pivosNoPeriodo.add(nomePivo);
+    }
+
+    // Agora, para cada pivô no período, pega TODAS as operações (incluindo dispensadas)
+    for (final pivoNome in pivosNoPeriodo) {
+      // Inicializa o pivô no resultado
+      resultado[pivoNome] = {
+        'nome': pivoNome,
+        'plantio': null,
+        'diasTotal': 0.0,
+        'diasConcluido': 0.0,
+        'diasAndamento': 0.0,
+        'diasPlanejado': 0.0,
+        'diasAtrasado': 0.0,
+        'diasDispensado': 0.0,
+        'operacoes': 0,
+        'concluidas': 0,
+        'andamento': 0,
+        'planejadas': 0,
+        'atrasadas': 0,
+        'dispensadas': 0,
+      };
+      
+      // Pega TODAS as operações deste pivô (incluindo dispensadas)
+      final operacoesPivo = widget.service.operacoes.where((op) {
+        if (op.pivoNome != pivoNome) return false;
+        if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) return false;
+        return true;
+      }).toList();
+      
+      // Define a data de plantio (pega a primeira que encontrar)
+      for (final op in operacoesPivo) {
+        if (op.dataPlantio != null) {
+          resultado[pivoNome]['plantio'] = op.dataPlantio;
+          break;
+        }
+      }
+      
+      // Processa todas as operações do pivô
+      for (final op in operacoesPivo) {
+        final dias = op.getDiasNecessarios().toDouble();
+        final item = resultado[pivoNome];
+        item['diasTotal'] += dias;
+        item['operacoes']++;
+        
+        // TRATAMENTO ESPECIAL: Operações dispensadas são consideradas como concluídas
+        if (op.status == 'dispensada') {
+          item['diasConcluido'] += dias;
+          item['concluidas']++;
+          item['diasDispensado'] += dias;
+          item['dispensadas']++;
+        } else {
+          switch (op.status) {
+            case 'concluida':
+              item['diasConcluido'] += dias;
+              item['concluidas']++;
+              break;
+            case 'em_andamento':
+              item['diasAndamento'] += dias;
+              item['andamento']++;
+              break;
+            case 'atrasada':
+              item['diasAtrasado'] += dias;
+              item['atrasadas']++;
+              break;
+            default:
+              item['diasPlanejado'] += dias;
+              item['planejadas']++;
+          }
+        }
+      }
+    }
+
+    final lista = resultado.values.toList();
+    lista.sort((a, b) {
+      final da = a['plantio'] as DateTime?;
+      final db = b['plantio'] as DateTime?;
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return da.compareTo(db);
+    });
+
+    return {
+      'lista': lista
+    };
+  }
+
   String _formatarDataComAno(DateTime? data) {
     if (data == null) return '---';
-    return '${data.day}/${data.month}/${data.year}';
+    try {
+      return '${data.day}/${data.month}/${data.year}';
+    } catch (e) {
+      return 'Data inválida';
+    }
+  }
+
+  Future<void> _carregarDados() async {
+    if (_isLoading) return;
+    
+    setState(() => _isLoading = true);
+    try {
+      await widget.service.carregarOperacoes();
+      _operacoesFiltradasCache = null;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao carregar dados: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   Future<void> _verificarOperacoesAtrasadas() async {
@@ -246,6 +361,7 @@ class _PainelScreenState extends State<PainelScreen> {
         await widget.service.atualizarStatus(op, 'atrasada');
       }
       
+      _operacoesFiltradasCache = null;
       setState(() => _isLoading = false);
       
       ScaffoldMessenger.of(context).showSnackBar(
@@ -260,6 +376,12 @@ class _PainelScreenState extends State<PainelScreen> {
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       final nomeUsuario = authProvider.currentEmail?.split('@').first ?? 'Usuário';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⏳ Gerando relatório PDF...'), duration: Duration(seconds: 2)),
+        );
+      }
       
       final pdfService = PdfService();
       
@@ -299,22 +421,9 @@ class _PainelScreenState extends State<PainelScreen> {
     final total = resumo.values.fold(0, (a, b) => a + b);
     final pivos = ['Todos', ...widget.service.getPivosUnicos()];
     final operacoesLista = ['Todas', ...widget.service.getOperacoesUnicas()];
-    if (widget.service.operacoes.isNotEmpty) {
-    final curralOps = widget.service.operacoes.where((op) => op.pivoNome == 'Curral Velho 03').toList();
-    print('🔥🔥🔥 TESTE MANUAL 🔥🔥🔥');
-    print('Curral Velho 03: ${curralOps.length} operações');
     
-    // Listar as primeiras 5 operações
-    for (var i = 0; i < (curralOps.length < 5 ? curralOps.length : 5); i++) {
-      print('  - ${curralOps[i].operacaoNome}');
-    }
-    
-    // Verificar se alguma operação está sendo filtrada por status
-    final filtradas = curralOps.where((op) => op.status != 'dispensada' && op.status != 'concluida').toList();
-    print('Operações não concluídas/não dispensadas: ${filtradas.length}');
-  }
     return RefreshIndicator(
-      onRefresh: () => widget.service.carregarOperacoes(),
+      onRefresh: _carregarDados,
       child: Stack(
         children: [
           if (_isLoading || _isGeneratingPdf)
@@ -334,6 +443,8 @@ class _PainelScreenState extends State<PainelScreen> {
                 const SizedBox(height: 25),
                 _buildInsights(insights),
                 const SizedBox(height: 25),
+                _buildResumoPlantios(),
+                const SizedBox(height: 20),
                 _buildSecaoOperacoes('Concluído', _cores['Concluído']!),
                 const SizedBox(height: 20),
                 _buildSecaoOperacoes('Em andamento', _cores['Em andamento']!),
@@ -406,6 +517,7 @@ class _PainelScreenState extends State<PainelScreen> {
                             onChanged: (value) => setState(() {
                               _filtroPivo = value!;
                               _expandedPivos.clear();
+                              _operacoesFiltradasCache = null;
                             }),
                           ),
                         ],
@@ -428,6 +540,7 @@ class _PainelScreenState extends State<PainelScreen> {
                             onChanged: (value) => setState(() {
                               _filtroOperacao = value!;
                               _expandedPivos.clear();
+                              _operacoesFiltradasCache = null;
                             }),
                           ),
                         ],
@@ -458,6 +571,7 @@ class _PainelScreenState extends State<PainelScreen> {
           setState(() {
             _filtroData = picked;
             _expandedPivos.clear();
+            _operacoesFiltradasCache = null;
           });
         }
       },
@@ -486,6 +600,7 @@ class _PainelScreenState extends State<PainelScreen> {
                   setState(() {
                     _filtroData = null;
                     _expandedPivos.clear();
+                    _operacoesFiltradasCache = null;
                   });
                 },
               ),
@@ -580,6 +695,9 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   Widget _buildInsights(Map<String, dynamic> insights) {
+    final totalOperacoes = (insights['operacoesConcluidas'] as int) + (insights['operacoesPendentes'] as int);
+    final totalUnicas = insights['totalOperacoesUnicas'] as int;
+    
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -608,13 +726,386 @@ class _PainelScreenState extends State<PainelScreen> {
           const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(child: _insightCard(icon: Icons.calendar_today, titulo: 'Tempo Necessário', valor: '${insights['diasAExecutar']} dias', cor: Colors.blue, subtitle: 'Considerando rendimento médio')),
+              Expanded(child: _insightCard(icon: Icons.calendar_today, titulo: 'Tempo Necessário', valor: '${insights['diasAExecutar']} dias', cor: Colors.blue, subtitle: 'Considerando rendimento total')),
               const SizedBox(width: 12),
-              Expanded(child: _insightCard(icon: Icons.trending_up, titulo: 'Rendimento Médio', valor: '${insights['rendimentoMedio'].toStringAsFixed(1)} ha/dia', cor: Colors.purple, subtitle: 'Baseado nas operações')),
+              Expanded(child: _insightCard(icon: Icons.trending_up, titulo: 'Rendimento Total', valor: '${insights['rendimentoMedio'].toStringAsFixed(1)} ha/dia', cor: Colors.purple, subtitle: 'Soma de $totalUnicas operações únicas')),
             ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildResumoPlantios() {
+    final lista = _progressoPivos['lista'] as List;
+
+    if (lista.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    int totalOperacoes = 0;
+    for (var item in lista) {
+      totalOperacoes += item['operacoes'] as int;
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            blurRadius: 4,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.green.withOpacity(0.1),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                topRight: Radius.circular(16),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.agriculture, color: Colors.green[700]),
+                    const SizedBox(width: 8),
+                    Text(
+                      _filtroData == null
+                          ? 'Resumo Geral dos Plantios'
+                          : 'Plantios previstos no período',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '$totalOperacoes operações',
+                    style: const TextStyle(fontSize: 12, color: Colors.black87),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ...lista.asMap().entries.map((entry) {
+            final index = entry.key;
+            final item = entry.value;
+            final pivoNome = item['nome'] as String;
+            final isExpanded = _expandedPivos['plantio_$pivoNome'] ?? false;
+            
+            final total = item['diasTotal'] as double;
+            final concluido = total == 0 ? 0 : item['diasConcluido'] / total;
+            final andamento = total == 0 ? 0 : item['diasAndamento'] / total;
+            final atrasado = total == 0 ? 0 : item['diasAtrasado'] / total;
+            final planejado = total == 0 ? 0 : item['diasPlanejado'] / total;
+            final executado = concluido + andamento;
+            final operacoesCount = item['operacoes'] as int;
+            final concluidasCount = item['concluidas'] as int;
+            final andamentoCount = item['andamento'] as int;
+            final planejadasCount = item['planejadas'] as int;
+            final atrasadasCount = item['atrasadas'] as int;
+            
+            final dataPlantio = item['plantio'] as DateTime?;
+
+            return Column(
+              children: [
+                InkWell(
+                  onTap: () => setState(() {
+                    _expandedPivos['plantio_$pivoNome'] = !isExpanded;
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: isExpanded ? Colors.green.withOpacity(0.05) : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          isExpanded ? Icons.expand_less : Icons.expand_more,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                pivoNome,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '$concluidasCount de $operacoesCount operações concluídas • $andamentoCount em andamento • $planejadasCount planejadas • $atrasadasCount atrasadas',
+                                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                              if (dataPlantio != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Text(
+                                    'Plantio: ${_formatarDataComAno(dataPlantio)} (${dataPlantio.difference(DateTime.now()).inDays} dias)',
+                                    style: TextStyle(
+                                      color: dataPlantio.difference(DateTime.now()).inDays < 15
+                                          ? Colors.red
+                                          : Colors.grey,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            '${(executado * 100).toStringAsFixed(0)}%',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.green[700],
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (isExpanded)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Divider(height: 0),
+                        const SizedBox(height: 12),
+                        
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: SizedBox(
+                            height: 24,
+                            child: Row(
+                              children: [
+                                if (concluido > 0)
+                                  Expanded(
+                                    flex: (concluido * 1000).round(),
+                                    child: Container(
+                                      color: Colors.green,
+                                      child: Center(
+                                        child: Text(
+                                          '${(concluido * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (andamento > 0)
+                                  Expanded(
+                                    flex: (andamento * 1000).round(),
+                                    child: Container(
+                                      color: Colors.blue,
+                                      child: Center(
+                                        child: Text(
+                                          '${(andamento * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (atrasado > 0)
+                                  Expanded(
+                                    flex: (atrasado * 1000).round(),
+                                    child: Container(
+                                      color: Colors.red,
+                                      child: Center(
+                                        child: Text(
+                                          '${(atrasado * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (planejado > 0)
+                                  Expanded(
+                                    flex: (planejado * 1000).round(),
+                                    child: Container(
+                                      color: Colors.amber,
+                                      child: Center(
+                                        child: Text(
+                                          '${(planejado * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            color: Colors.black87,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 12),
+                        
+                        Wrap(
+                          spacing: 14,
+                          runSpacing: 8,
+                          children: [
+                            _buildLegendItemWithCount(
+                              '🟩', 
+                              'Concluído', 
+                              (concluido * 100).toStringAsFixed(0), 
+                              concluidasCount,
+                              Colors.green
+                            ),
+                            _buildLegendItemWithCount(
+                              '🟦', 
+                              'Em andamento', 
+                              (andamento * 100).toStringAsFixed(0), 
+                              andamentoCount,
+                              Colors.blue
+                            ),
+                            _buildLegendItemWithCount(
+                              '🟥', 
+                              'Atrasado', 
+                              (atrasado * 100).toStringAsFixed(0), 
+                              atrasadasCount,
+                              Colors.red
+                            ),
+                            _buildLegendItemWithCount(
+                              '🟨', 
+                              'Planejado', 
+                              (planejado * 100).toStringAsFixed(0), 
+                              planejadasCount,
+                              Colors.amber
+                            ),
+                          ],
+                        ),
+                        
+                        const SizedBox(height: 8),
+                        
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _buildMetricaItem(
+                                'Total Dias',
+                                '${total.toStringAsFixed(0)}',
+                                Colors.grey[600]!,
+                              ),
+                              _buildMetricaItem(
+                                'Concluídos',
+                                '$concluidasCount/$operacoesCount',
+                                Colors.green,
+                              ),
+                              _buildMetricaItem(
+                                'Execução',
+                                '${(executado * 100).toStringAsFixed(0)}%',
+                                Colors.green[700]!,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (index < lista.length - 1) const Divider(height: 0, indent: 16),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegendItemWithCount(String icon, String label, String percent, int count, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(icon, style: const TextStyle(fontSize: 14)),
+          const SizedBox(width: 4),
+          Text(
+            '$label: $count ($percent%)',
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMetricaItem(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.grey[600],
+          ),
+        ),
+      ],
     );
   }
 

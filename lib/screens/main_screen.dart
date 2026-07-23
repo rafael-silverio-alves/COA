@@ -45,8 +45,8 @@ class _MainScreenState extends State<MainScreen> {
       _telas = [
         PainelScreen(service: widget.service),
         OperacoesScreen(service: widget.service),
-        const PivosScreen(),
-        const PlantioScreen(),
+        PivosScreen(),  // REMOVIDO O const
+        PlantioScreen(), // REMOVIDO O const
       ];
       _titulosAbas = ['Painel', 'Operações', 'Pivôs', 'Novo Plantio'];
       _iconesAbas = [Icons.dashboard, Icons.agriculture, Icons.grass, Icons.add_circle];
