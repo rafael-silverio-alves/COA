@@ -24,8 +24,6 @@ class _PainelScreenState extends State<PainelScreen> {
   bool _isLoading = false;
   bool _isGeneratingPdf = false;
 
-  // Controle de expansão dos containers informacionais
-  // Iniciam todos recolhidos ao abrir o app
   final Map<String, bool> _secoesExpandidas = {
     'insights': false,
     'grafico': false,
@@ -37,14 +35,12 @@ class _PainelScreenState extends State<PainelScreen> {
     'ops_Dispensada': false,
   };
 
-  // Cache para dados filtrados
   List<OperacaoExecutada>? _operacoesFiltradasCache;
   String? _lastFiltroPivo;
   String? _lastFiltroOperacao;
   DateTime? _lastDataInicio;
   DateTime? _lastDataFim;
 
-  // Cache para dados calculados (resumo, insights, progresso)
   Map<String, int>? _resumoCache;
   Map<String, dynamic>? _insightsCache;
   Map<String, dynamic>? _progressoPivosCache;
@@ -85,7 +81,6 @@ class _PainelScreenState extends State<PainelScreen> {
     return _operacoesFiltradasCache!;
   }
 
-  /// True se o filtro de data está ativo (pelo menos uma das pontas).
   bool get _temFiltroData => _dataInicio != null || _dataFim != null;
 
   List<OperacaoExecutada> _calcularOperacoesFiltradas() {
@@ -107,7 +102,6 @@ class _PainelScreenState extends State<PainelScreen> {
         }
 
         if (dataReferencia == null) return false;
-
         if (inicio != null && dataReferencia.isBefore(inicio)) return false;
         if (fim != null && dataReferencia.isAfter(fim)) return false;
       }
@@ -177,37 +171,16 @@ class _PainelScreenState extends State<PainelScreen> {
       }
     }
 
-    // Tempo por pivô (sequencial dentro do pivô)
-    final Map<String, double> diasPorPivo = {};
-
-    // Rendimento único por operação padrão (deduplica por nome)
+    // Rendimento único por operação padrão (para o card de capacidade)
     final Map<String, double> rendimentoPorOperacao = {};
-
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada' || op.status == 'concluida') continue;
-
       final rendimento = op.rendimentoHaDia ?? 0;
       if (rendimento <= 0) continue;
-
-      final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
-      final dias = area / rendimento;
-      final pivo = op.pivoNome ?? 'Sem pivô';
-
-      diasPorPivo[pivo] = (diasPorPivo[pivo] ?? 0) + dias;
-
       final nomeOp = op.operacaoNome ?? 'Sem nome';
       rendimentoPorOperacao.putIfAbsent(nomeOp, () => rendimento);
     }
 
-    // Paralelo entre pivôs: o maior tempo manda
-    int diasAExecutar = 0;
-    if (diasPorPivo.isNotEmpty) {
-      diasAExecutar = diasPorPivo.values.reduce(max).ceil();
-    }
-
-    // Capacidade total:
-    // - Filtro de 1 pivô → gargalo (menor rendimento), pois operações são sequenciais
-    // - Sem filtro → soma única por operação padrão (pivôs em paralelo)
     double capacidadeTotal;
     if (_filtroPivo != 'Todos') {
       capacidadeTotal = rendimentoPorOperacao.isEmpty
@@ -218,15 +191,98 @@ class _PainelScreenState extends State<PainelScreen> {
           rendimentoPorOperacao.values.fold<double>(0, (a, b) => a + b);
     }
 
+    // ============================================================
+    // SIMULAÇÃO COM JANELAS
+    // ============================================================
+    // Agrupa operações pendentes por pivô.
+    final Map<String, List<OperacaoExecutada>> opsPorPivo = {};
+    for (var op in _operacoesFiltradas) {
+      if (op.status == 'dispensada' || op.status == 'concluida') continue;
+      final pivo = op.pivoNome ?? 'Sem pivô';
+      opsPorPivo.putIfAbsent(pivo, () => []).add(op);
+    }
+
+    final hoje = DateTime.now();
+    DateTime? dataFimMaisTardia;
+    int pivosEmParalelo = 0;
+
+    for (var entry in opsPorPivo.entries) {
+      final ops = entry.value;
+
+      // Ordena por dias_antes_plantio (mais negativo primeiro = mais distante
+      // do plantio roda antes).
+      ops.sort((a, b) =>
+          (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
+
+      if (ops.isEmpty) continue;
+      pivosEmParalelo++;
+
+      // Bloqueio inicial: operações em andamento ocupam o pivô até terminarem.
+      DateTime? livreEm;
+      for (var op in ops) {
+        if (op.status != 'em_andamento') continue;
+        if (op.dataInicioPrimeira == null) continue;
+        final rendimento = op.rendimentoHaDia ?? 0;
+        if (rendimento <= 0) continue;
+        final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+        final duracao = area / rendimento;
+        final fimPrevisto = op.dataInicioPrimeira!
+            .add(Duration(days: duracao.ceil()));
+        if (livreEm == null || fimPrevisto.isAfter(livreEm)) {
+          livreEm = fimPrevisto;
+        }
+      }
+
+      // Simula cada operação na ordem.
+      for (var op in ops) {
+        final rendimento = op.rendimentoHaDia ?? 0;
+        if (rendimento <= 0) continue;
+
+        final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+        final duracaoDias = (area / rendimento).ceil();
+
+        // Se está em andamento, já começou. Usa o fim previsto direto.
+        if (op.status == 'em_andamento' && op.dataInicioPrimeira != null) {
+          final fim = op.dataInicioPrimeira!
+              .add(Duration(days: duracaoDias));
+          if (dataFimMaisTardia == null || fim.isAfter(dataFimMaisTardia)) {
+            dataFimMaisTardia = fim;
+          }
+          continue;
+        }
+
+        final inicioJanela = op.getDataInicioJanelaCalculada();
+
+        // Início real: o mais tarde entre "pivô livre" e "janela aberta".
+        DateTime inicioReal;
+        if (livreEm == null) {
+          inicioReal = inicioJanela;
+        } else {
+          inicioReal =
+              livreEm.isAfter(inicioJanela) ? livreEm : inicioJanela;
+        }
+
+        final fimReal = inicioReal.add(Duration(days: duracaoDias));
+        livreEm = fimReal;
+
+        if (dataFimMaisTardia == null || fimReal.isAfter(dataFimMaisTardia)) {
+          dataFimMaisTardia = fimReal;
+        }
+      }
+    }
+
+    final diasAExecutar = dataFimMaisTardia == null
+        ? 0
+        : dataFimMaisTardia.difference(hoje).inDays;
+
     _insightsCache = {
       'totalRealizado': totalRealizado,
       'totalAExecutar': totalAExecutar,
-      'diasAExecutar': diasAExecutar,
+      'diasAExecutar': diasAExecutar < 0 ? 0 : diasAExecutar,
       'capacidadeTotal': capacidadeTotal,
       'operacoesConcluidas': operacoesConcluidas,
       'operacoesPendentes': operacoesPendentes,
-      'pivosEmParalelo': diasPorPivo.length,
-      'diasPorPivo': diasPorPivo,
+      'pivosEmParalelo': pivosEmParalelo,
     };
     return _insightsCache!;
   }
@@ -291,7 +347,6 @@ class _PainelScreenState extends State<PainelScreen> {
         item['diasTotal'] += dias;
         item['operacoes']++;
 
-        // Dispensadas NÃO contam como concluídas.
         switch (op.status) {
           case 'dispensada':
             item['diasDispensado'] += dias;
@@ -315,7 +370,6 @@ class _PainelScreenState extends State<PainelScreen> {
         }
       }
 
-      // Percentuais por CONTAGEM (base: operações executáveis)
       final item = resultado[pivoNome];
       final operacoesExecutaveis =
           (item['operacoes'] as int) - (item['dispensadas'] as int);
@@ -338,6 +392,54 @@ class _PainelScreenState extends State<PainelScreen> {
       item['percentualAtrasado'] = percentualAtrasado;
       item['percentualPlanejado'] = percentualPlanejado;
       item['percentualExecutado'] = percentualConcluido + percentualAndamento;
+
+      // ============================================================
+      // AVISO DE ESTADO DO PIVÔ
+      // ============================================================
+      // Ordena todas as operações do pivô (incluindo concluídas/dispensadas)
+      // por dias_antes_plantio, para descobrir a "próxima da fila".
+      final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivo)
+        ..sort((a, b) =>
+            (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
+
+      String? aviso;
+      bool avisoConcluido = false;
+
+      // Todas concluídas/dispensadas?
+      final todasFinalizadas = opsOrdenadas.every(
+        (op) => op.status == 'concluida' || op.status == 'dispensada',
+      );
+
+      if (todasFinalizadas && opsOrdenadas.isNotEmpty) {
+        aviso = '✅ Concluído';
+        avisoConcluido = true;
+      } else {
+        // Encontra a próxima operação pendente.
+        final proxima = opsOrdenadas.firstWhere(
+          (op) => op.status != 'concluida' && op.status != 'dispensada',
+          orElse: () => opsOrdenadas.last,
+        );
+
+        // Índice da próxima na fila
+        final idxProxima = opsOrdenadas.indexOf(proxima);
+
+        // Verifica se a imediatamente anterior já está concluída/dispensada.
+        final anteriorOk = idxProxima == 0 ||
+            opsOrdenadas[idxProxima - 1].status == 'concluida' ||
+            opsOrdenadas[idxProxima - 1].status == 'dispensada';
+
+        // Só mostra "Pronto" se a anterior já foi finalizada
+        // e não há operação em andamento bloqueando.
+        final temAndamento = opsOrdenadas
+            .any((op) => op.status == 'em_andamento');
+
+        if (anteriorOk && !temAndamento) {
+          aviso = '🟢 Pronto para receber ${proxima.operacaoNome ?? "operação"}';
+        }
+      }
+
+      item['aviso'] = aviso;
+      item['avisoConcluido'] = avisoConcluido;
     }
 
     final lista = resultado.values.toList();
@@ -809,7 +911,6 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
-  /// Filtro de data — Opção B: dois campos separados (inicial / final).
   Widget _buildDataFilter() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1114,7 +1215,7 @@ class _PainelScreenState extends State<PainelScreen> {
                   cor: Colors.blue,
                   subtitle: pivos == 0
                       ? 'Sem operações pendentes'
-                      : '$pivos pivô(s) em paralelo',
+                      : '$pivos pivô(s) em paralelo, respeitando janelas',
                 ),
               ),
               const SizedBox(width: 12),
@@ -1253,6 +1354,8 @@ class _PainelScreenState extends State<PainelScreen> {
                     operacoesCount - dispensadasCount;
 
                 final dataPlantio = item['plantio'] as DateTime?;
+                final aviso = item['aviso'] as String?;
+                final avisoConcluido = item['avisoConcluido'] as bool? ?? false;
 
                 return Column(
                   children: [
@@ -1283,13 +1386,51 @@ class _PainelScreenState extends State<PainelScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    pivoNome,
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.black87,
-                                    ),
+                                  // NOME + AVISO
+                                  Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          pivoNome,
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.black87,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (aviso != null) ...[
+                                        const SizedBox(width: 8),
+                                        Flexible(
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 6,
+                                              vertical: 2,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: avisoConcluido
+                                                  ? Colors.grey.withOpacity(0.15)
+                                                  : Colors.green
+                                                      .withOpacity(0.15),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              aviso,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                                color: avisoConcluido
+                                                    ? Colors.grey[800]
+                                                    : Colors.green[800],
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
