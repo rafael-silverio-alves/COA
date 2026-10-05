@@ -18,16 +18,36 @@ class PainelScreen extends StatefulWidget {
 class _PainelScreenState extends State<PainelScreen> {
   String _filtroPivo = 'Todos';
   String _filtroOperacao = 'Todas';
-  DateTimeRange? _filtroData;
+  DateTime? _dataInicio;
+  DateTime? _dataFim;
   Map<String, bool> _expandedPivos = {};
   bool _isLoading = false;
   bool _isGeneratingPdf = false;
+
+  // Controle de expansão dos containers informacionais
+  // Iniciam todos recolhidos ao abrir o app
+  final Map<String, bool> _secoesExpandidas = {
+    'insights': false,
+    'grafico': false,
+    'resumoPlantios': false,
+    'ops_Concluído': false,
+    'ops_Em andamento': false,
+    'ops_Planejada': false,
+    'ops_Atrasada': false,
+    'ops_Dispensada': false,
+  };
 
   // Cache para dados filtrados
   List<OperacaoExecutada>? _operacoesFiltradasCache;
   String? _lastFiltroPivo;
   String? _lastFiltroOperacao;
-  DateTimeRange? _lastFiltroData;
+  DateTime? _lastDataInicio;
+  DateTime? _lastDataFim;
+
+  // Cache para dados calculados (resumo, insights, progresso)
+  Map<String, int>? _resumoCache;
+  Map<String, dynamic>? _insightsCache;
+  Map<String, dynamic>? _progressoPivosCache;
 
   final Map<String, Color> _cores = {
     'Concluído': const Color(0xFF22C55E),
@@ -37,153 +57,202 @@ class _PainelScreenState extends State<PainelScreen> {
     'Dispensada': Colors.grey,
   };
 
+  void _invalidarCaches() {
+    _operacoesFiltradasCache = null;
+    _resumoCache = null;
+    _insightsCache = null;
+    _progressoPivosCache = null;
+  }
+
   List<OperacaoExecutada> get _operacoesFiltradas {
-    // Verifica se o cache é válido
     if (_operacoesFiltradasCache != null &&
         _filtroPivo == _lastFiltroPivo &&
         _filtroOperacao == _lastFiltroOperacao &&
-        _filtroData == _lastFiltroData) {
+        _dataInicio == _lastDataInicio &&
+        _dataFim == _lastDataFim) {
       return _operacoesFiltradasCache!;
     }
-    
-    // Atualiza cache
+
     _lastFiltroPivo = _filtroPivo;
     _lastFiltroOperacao = _filtroOperacao;
-    _lastFiltroData = _filtroData;
-    
+    _lastDataInicio = _dataInicio;
+    _lastDataFim = _dataFim;
+
     _operacoesFiltradasCache = _calcularOperacoesFiltradas();
+    _resumoCache = null;
+    _insightsCache = null;
+    _progressoPivosCache = null;
     return _operacoesFiltradasCache!;
   }
+
+  /// True se o filtro de data está ativo (pelo menos uma das pontas).
+  bool get _temFiltroData => _dataInicio != null || _dataFim != null;
 
   List<OperacaoExecutada> _calcularOperacoesFiltradas() {
     var operacoes = widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
-      if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) return false;
-      
-      if (_filtroData != null) {
+      if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) {
+        return false;
+      }
+
+      if (_temFiltroData) {
+        final inicio = _dataInicio;
+        final fim = _dataFim;
+
+        DateTime? dataReferencia;
         if (op.status == 'concluida' && op.dataFimUltima != null) {
-          final dataConclusao = op.dataFimUltima!;
-          if (dataConclusao.isBefore(_filtroData!.start) || dataConclusao.isAfter(_filtroData!.end)) {
-            return false;
-          }
+          dataReferencia = op.dataFimUltima;
         } else {
-          final inicioJanela = op.getDataInicioJanelaCalculada();
-          final fimJanela = op.getDataFimJanelaCalculada();
-          if (fimJanela.isBefore(_filtroData!.start) || inicioJanela.isAfter(_filtroData!.end)) {
-            return false;
-          }
+          dataReferencia = op.getDataInicioJanelaCalculada();
         }
+
+        if (dataReferencia == null) return false;
+
+        if (inicio != null && dataReferencia.isBefore(inicio)) return false;
+        if (fim != null && dataReferencia.isAfter(fim)) return false;
       }
       return true;
     }).toList();
-    
+
     operacoes.sort((a, b) {
       DateTime? dataA;
       DateTime? dataB;
-      
+
       if (a.status == 'concluida') {
         dataA = a.dataFimUltima;
       } else {
         dataA = a.getDataInicioJanelaCalculada();
       }
-      
+
       if (b.status == 'concluida') {
         dataB = b.dataFimUltima;
       } else {
         dataB = b.getDataInicioJanelaCalculada();
       }
-      
+
       final dateA = dataA ?? DateTime(3000);
       final dateB = dataB ?? DateTime(3000);
       return dateA.compareTo(dateB);
     });
-    
+
     return operacoes;
   }
 
   Map<String, int> get _resumo {
-    final resumo = {'Concluído': 0, 'Em andamento': 0, 'Planejada': 0, 'Atrasada': 0, 'Dispensada': 0};
+    if (_resumoCache != null) return _resumoCache!;
+
+    final resumo = {
+      'Concluído': 0,
+      'Em andamento': 0,
+      'Planejada': 0,
+      'Atrasada': 0,
+      'Dispensada': 0,
+    };
     for (var op in _operacoesFiltradas) {
-      resumo[op.getStatusText()] = (resumo[op.getStatusText()] ?? 0) + 1;
+      final status = op.getStatusText();
+      resumo[status] = (resumo[status] ?? 0) + 1;
     }
+    _resumoCache = resumo;
     return resumo;
   }
-   
+
   Map<String, dynamic> get _insights {
+    if (_insightsCache != null) return _insightsCache!;
+
     double totalRealizado = 0;
     double totalAExecutar = 0;
     int operacoesConcluidas = 0;
     int operacoesPendentes = 0;
-    double rendimentoTotal = 0;
-    
-    // Usando um Set para armazenar operações únicas (por nome)
-    Set<String> operacoesUnicas = {};
 
     for (var op in _operacoesFiltradas) {
-      // Ignora dispensadas para os cálculos de área
       if (op.status == 'dispensada') continue;
+      final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
 
-      final areaComPassadas = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
-      
       if (op.status == 'concluida') {
-        totalRealizado += areaComPassadas;
+        totalRealizado += area;
         operacoesConcluidas++;
       } else {
-        totalAExecutar += areaComPassadas;
+        totalAExecutar += area;
         operacoesPendentes++;
       }
-
-      // SOMA o rendimento de cada operação ÚNICA
-      final nomeOperacao = op.operacaoNome ?? '';
-      if ((op.rendimentoHaDia ?? 0) > 0 && !operacoesUnicas.contains(nomeOperacao)) {
-        rendimentoTotal += op.rendimentoHaDia!;
-        operacoesUnicas.add(nomeOperacao);
-      }
     }
 
+    // Tempo por pivô (sequencial dentro do pivô)
+    final Map<String, double> diasPorPivo = {};
+
+    // Rendimento único por operação padrão (deduplica por nome)
+    final Map<String, double> rendimentoPorOperacao = {};
+
+    for (var op in _operacoesFiltradas) {
+      if (op.status == 'dispensada' || op.status == 'concluida') continue;
+
+      final rendimento = op.rendimentoHaDia ?? 0;
+      if (rendimento <= 0) continue;
+
+      final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+      final dias = area / rendimento;
+      final pivo = op.pivoNome ?? 'Sem pivô';
+
+      diasPorPivo[pivo] = (diasPorPivo[pivo] ?? 0) + dias;
+
+      final nomeOp = op.operacaoNome ?? 'Sem nome';
+      rendimentoPorOperacao.putIfAbsent(nomeOp, () => rendimento);
+    }
+
+    // Paralelo entre pivôs: o maior tempo manda
     int diasAExecutar = 0;
-    if (rendimentoTotal > 0 && totalAExecutar > 0) {
-      diasAExecutar = (totalAExecutar / rendimentoTotal).ceil();
+    if (diasPorPivo.isNotEmpty) {
+      diasAExecutar = diasPorPivo.values.reduce(max).ceil();
     }
 
-    return {
+    // Capacidade total:
+    // - Filtro de 1 pivô → gargalo (menor rendimento), pois operações são sequenciais
+    // - Sem filtro → soma única por operação padrão (pivôs em paralelo)
+    double capacidadeTotal;
+    if (_filtroPivo != 'Todos') {
+      capacidadeTotal = rendimentoPorOperacao.isEmpty
+          ? 0
+          : rendimentoPorOperacao.values.reduce(min);
+    } else {
+      capacidadeTotal =
+          rendimentoPorOperacao.values.fold<double>(0, (a, b) => a + b);
+    }
+
+    _insightsCache = {
       'totalRealizado': totalRealizado,
       'totalAExecutar': totalAExecutar,
       'diasAExecutar': diasAExecutar,
-      'rendimentoMedio': rendimentoTotal, // SOMA dos rendimentos de operações únicas
+      'capacidadeTotal': capacidadeTotal,
       'operacoesConcluidas': operacoesConcluidas,
       'operacoesPendentes': operacoesPendentes,
-      'totalOperacoesUnicas': operacoesUnicas.length,
+      'pivosEmParalelo': diasPorPivo.length,
+      'diasPorPivo': diasPorPivo,
     };
+    return _insightsCache!;
   }
 
   Map<String, dynamic> get _progressoPivos {
+    if (_progressoPivosCache != null) return _progressoPivosCache!;
+
     final Map<String, dynamic> resultado = {};
 
-    // Primeiro, vamos identificar quais pivôs têm plantio no período filtrado
     Set<String> pivosNoPeriodo = {};
-    
+
     for (final op in widget.service.operacoes) {
-      // Não filtra dispensadas para o resumo de plantios
-      // Aplica filtro de pivô
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) continue;
-      
-      // Verifica se o plantio está no período filtrado
-      if (_filtroData != null) {
-        if (op.dataPlantio == null) continue;
-        if (op.dataPlantio!.isBefore(_filtroData!.start) ||
-            op.dataPlantio!.isAfter(_filtroData!.end)) {
-          continue;
-        }
+
+      if (_temFiltroData) {
+        final plantio = op.dataPlantio;
+        if (plantio == null) continue;
+        if (_dataInicio != null && plantio.isBefore(_dataInicio!)) continue;
+        if (_dataFim != null && plantio.isAfter(_dataFim!)) continue;
       }
-      
+
       final nomePivo = op.pivoNome ?? 'Sem pivô';
       pivosNoPeriodo.add(nomePivo);
     }
 
-    // Agora, para cada pivô no período, pega TODAS as operações (incluindo dispensadas)
     for (final pivoNome in pivosNoPeriodo) {
-      // Inicializa o pivô no resultado
       resultado[pivoNome] = {
         'nome': pivoNome,
         'plantio': null,
@@ -200,55 +269,75 @@ class _PainelScreenState extends State<PainelScreen> {
         'atrasadas': 0,
         'dispensadas': 0,
       };
-      
-      // Pega TODAS as operações deste pivô (incluindo dispensadas)
+
       final operacoesPivo = widget.service.operacoes.where((op) {
         if (op.pivoNome != pivoNome) return false;
-        if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) return false;
+        if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) {
+          return false;
+        }
         return true;
       }).toList();
-      
-      // Define a data de plantio (pega a primeira que encontrar)
+
       for (final op in operacoesPivo) {
         if (op.dataPlantio != null) {
           resultado[pivoNome]['plantio'] = op.dataPlantio;
           break;
         }
       }
-      
-      // Processa todas as operações do pivô
+
       for (final op in operacoesPivo) {
         final dias = op.getDiasNecessarios().toDouble();
         final item = resultado[pivoNome];
         item['diasTotal'] += dias;
         item['operacoes']++;
-        
-        // TRATAMENTO ESPECIAL: Operações dispensadas são consideradas como concluídas
-        if (op.status == 'dispensada') {
-          item['diasConcluido'] += dias;
-          item['concluidas']++;
-          item['diasDispensado'] += dias;
-          item['dispensadas']++;
-        } else {
-          switch (op.status) {
-            case 'concluida':
-              item['diasConcluido'] += dias;
-              item['concluidas']++;
-              break;
-            case 'em_andamento':
-              item['diasAndamento'] += dias;
-              item['andamento']++;
-              break;
-            case 'atrasada':
-              item['diasAtrasado'] += dias;
-              item['atrasadas']++;
-              break;
-            default:
-              item['diasPlanejado'] += dias;
-              item['planejadas']++;
-          }
+
+        // Dispensadas NÃO contam como concluídas.
+        switch (op.status) {
+          case 'dispensada':
+            item['diasDispensado'] += dias;
+            item['dispensadas']++;
+            break;
+          case 'concluida':
+            item['diasConcluido'] += dias;
+            item['concluidas']++;
+            break;
+          case 'em_andamento':
+            item['diasAndamento'] += dias;
+            item['andamento']++;
+            break;
+          case 'atrasada':
+            item['diasAtrasado'] += dias;
+            item['atrasadas']++;
+            break;
+          default:
+            item['diasPlanejado'] += dias;
+            item['planejadas']++;
         }
       }
+
+      // Percentuais por CONTAGEM (base: operações executáveis)
+      final item = resultado[pivoNome];
+      final operacoesExecutaveis =
+          (item['operacoes'] as int) - (item['dispensadas'] as int);
+
+      final percentualConcluido = operacoesExecutaveis == 0
+          ? 0.0
+          : (item['concluidas'] as int) / operacoesExecutaveis;
+      final percentualAndamento = operacoesExecutaveis == 0
+          ? 0.0
+          : (item['andamento'] as int) / operacoesExecutaveis;
+      final percentualAtrasado = operacoesExecutaveis == 0
+          ? 0.0
+          : (item['atrasadas'] as int) / operacoesExecutaveis;
+      final percentualPlanejado = operacoesExecutaveis == 0
+          ? 0.0
+          : (item['planejadas'] as int) / operacoesExecutaveis;
+
+      item['percentualConcluido'] = percentualConcluido;
+      item['percentualAndamento'] = percentualAndamento;
+      item['percentualAtrasado'] = percentualAtrasado;
+      item['percentualPlanejado'] = percentualPlanejado;
+      item['percentualExecutado'] = percentualConcluido + percentualAndamento;
     }
 
     final lista = resultado.values.toList();
@@ -261,9 +350,8 @@ class _PainelScreenState extends State<PainelScreen> {
       return da.compareTo(db);
     });
 
-    return {
-      'lista': lista
-    };
+    _progressoPivosCache = {'lista': lista};
+    return _progressoPivosCache!;
   }
 
   String _formatarDataComAno(DateTime? data) {
@@ -277,15 +365,18 @@ class _PainelScreenState extends State<PainelScreen> {
 
   Future<void> _carregarDados() async {
     if (_isLoading) return;
-    
+
     setState(() => _isLoading = true);
     try {
       await widget.service.carregarOperacoes();
-      _operacoesFiltradasCache = null;
+      _invalidarCaches();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro ao carregar dados: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Erro ao carregar dados: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -297,20 +388,22 @@ class _PainelScreenState extends State<PainelScreen> {
 
   Future<void> _verificarOperacoesAtrasadas() async {
     List<OperacaoExecutada> operacoesParaCorrigir = [];
-    
+
     for (var op in widget.service.operacoes) {
       if (op.isRealmenteAtrasada && op.status != 'atrasada') {
         operacoesParaCorrigir.add(op);
       }
     }
-    
+
     if (operacoesParaCorrigir.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('✅ Nenhuma operação inconsistente encontrada')),
+        const SnackBar(
+          content: Text('✅ Nenhuma operação inconsistente encontrada'),
+        ),
       );
       return;
     }
-    
+
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -319,23 +412,27 @@ class _PainelScreenState extends State<PainelScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Encontradas ${operacoesParaCorrigir.length} operações que estão fora da janela:'),
+            Text(
+              'Encontradas ${operacoesParaCorrigir.length} operações que estão fora da janela:',
+            ),
             const SizedBox(height: 12),
-            ...operacoesParaCorrigir.map((op) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning, color: Colors.orange, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${op.operacaoNome} - ${op.pivoNome}',
-                      style: const TextStyle(fontSize: 12),
+            ...operacoesParaCorrigir.map(
+              (op) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning, color: Colors.orange, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${op.operacaoNome} - ${op.pivoNome}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            )),
+            ),
             const SizedBox(height: 16),
             const Text('Deseja marcar todas como ATRASADAS?'),
           ],
@@ -353,58 +450,73 @@ class _PainelScreenState extends State<PainelScreen> {
         ],
       ),
     );
-    
+
     if (confirmar == true) {
       setState(() => _isLoading = true);
-      
+
       for (var op in operacoesParaCorrigir) {
         await widget.service.atualizarStatus(op, 'atrasada');
       }
-      
-      _operacoesFiltradasCache = null;
+
+      _invalidarCaches();
       setState(() => _isLoading = false);
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('✅ ${operacoesParaCorrigir.length} operações marcadas como atrasadas')),
+        SnackBar(
+          content: Text(
+            '✅ ${operacoesParaCorrigir.length} operações marcadas como atrasadas',
+          ),
+        ),
       );
     }
   }
 
   Future<void> _gerarRelatorioPDF() async {
     setState(() => _isGeneratingPdf = true);
-    
+
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final nomeUsuario = authProvider.currentEmail?.split('@').first ?? 'Usuário';
-      
+      final nomeUsuario =
+          authProvider.currentEmail?.split('@').first ?? 'Usuário';
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('⏳ Gerando relatório PDF...'), duration: Duration(seconds: 2)),
+          const SnackBar(
+            content: Text('⏳ Gerando relatório PDF...'),
+            duration: Duration(seconds: 2),
+          ),
         );
       }
-      
+
       final pdfService = PdfService();
-      
+
       await pdfService.gerarRelatorioOperacoes(
         operacoes: _operacoesFiltradas,
         resumo: _resumo,
         insights: _insights,
         filtroPivo: _filtroPivo,
         filtroOperacao: _filtroOperacao,
-        filtroData: _filtroData,
+        filtroData: (_dataInicio != null && _dataFim != null)
+            ? DateTimeRange(start: _dataInicio!, end: _dataFim!)
+            : null,
         nomeUsuario: nomeUsuario,
         dataGeracao: DateTime.now(),
       );
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ Relatório PDF gerado com sucesso!')),
+          const SnackBar(
+            content: Text('✅ Relatório PDF gerado com sucesso!'),
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('❌ Erro ao gerar relatório: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('❌ Erro ao gerar relatório: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -414,6 +526,14 @@ class _PainelScreenState extends State<PainelScreen> {
     }
   }
 
+  void _toggleSecao(String key) {
+    setState(() {
+      _secoesExpandidas[key] = !(_secoesExpandidas[key] ?? false);
+    });
+  }
+
+  bool _isSecaoExpandida(String key) => _secoesExpandidas[key] ?? false;
+
   @override
   Widget build(BuildContext context) {
     final resumo = _resumo;
@@ -421,7 +541,7 @@ class _PainelScreenState extends State<PainelScreen> {
     final total = resumo.values.fold(0, (a, b) => a + b);
     final pivos = ['Todos', ...widget.service.getPivosUnicos()];
     final operacoesLista = ['Todas', ...widget.service.getOperacoesUnicas()];
-    
+
     return RefreshIndicator(
       onRefresh: _carregarDados,
       child: Stack(
@@ -439,9 +559,21 @@ class _PainelScreenState extends State<PainelScreen> {
                 const SizedBox(height: 25),
                 _buildCards(resumo),
                 const SizedBox(height: 25),
-                _buildGrafico(resumo, total),
+                _buildSecaoRecolhivel(
+                  chave: 'grafico',
+                  titulo: 'Distribuição por Status',
+                  icone: Icons.pie_chart,
+                  cor: Colors.blue,
+                  child: _buildGrafico(resumo, total),
+                ),
                 const SizedBox(height: 25),
-                _buildInsights(insights),
+                _buildSecaoRecolhivel(
+                  chave: 'insights',
+                  titulo: 'Insights Operacionais',
+                  icone: Icons.insights,
+                  cor: Colors.blue[700]!,
+                  child: _buildInsights(insights),
+                ),
                 const SizedBox(height: 25),
                 _buildResumoPlantios(),
                 const SizedBox(height: 20),
@@ -462,12 +594,91 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
+  Widget _buildSecaoRecolhivel({
+    required String chave,
+    required String titulo,
+    required IconData icone,
+    required Color cor,
+    required Widget child,
+  }) {
+    final isExpanded = _isSecaoExpandida(chave);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 4,
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => _toggleSecao(chave),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cor.withOpacity(0.1),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(icone, color: cor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      titulo,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: Colors.grey[700],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 250),
+            crossFadeState: isExpanded
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            firstChild: child,
+            secondChild: const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFiltros(List<String> pivos, List<String> operacoesLista) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 4)],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 4,
+          ),
+        ],
       ),
       child: Column(
         children: [
@@ -476,7 +687,14 @@ class _PainelScreenState extends State<PainelScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Filtros', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+                const Text(
+                  'Filtros',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                ),
                 Row(
                   children: [
                     IconButton(
@@ -485,7 +703,10 @@ class _PainelScreenState extends State<PainelScreen> {
                       tooltip: 'Gerar Relatório PDF',
                     ),
                     IconButton(
-                      icon: const Icon(Icons.warning_amber, color: Colors.orange),
+                      icon: const Icon(
+                        Icons.warning_amber,
+                        color: Colors.orange,
+                      ),
                       onPressed: _verificarOperacoesAtrasadas,
                       tooltip: 'Verificar operações atrasadas',
                     ),
@@ -505,19 +726,34 @@ class _PainelScreenState extends State<PainelScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Pivô', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                          const Text(
+                            'Pivô',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
                           const SizedBox(height: 4),
                           DropdownButtonFormField<String>(
                             value: _filtroPivo,
                             decoration: InputDecoration(
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
                             ),
-                            items: pivos.map((pivo) => DropdownMenuItem(value: pivo, child: Text(pivo))).toList(),
+                            items: pivos
+                                .map(
+                                  (pivo) => DropdownMenuItem(
+                                    value: pivo,
+                                    child: Text(pivo),
+                                  ),
+                                )
+                                .toList(),
                             onChanged: (value) => setState(() {
                               _filtroPivo = value!;
                               _expandedPivos.clear();
-                              _operacoesFiltradasCache = null;
+                              _invalidarCaches();
                             }),
                           ),
                         ],
@@ -528,19 +764,34 @@ class _PainelScreenState extends State<PainelScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Operação', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                          const Text(
+                            'Operação',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
                           const SizedBox(height: 4),
                           DropdownButtonFormField<String>(
                             value: _filtroOperacao,
                             decoration: InputDecoration(
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
                             ),
-                            items: operacoesLista.map((op) => DropdownMenuItem(value: op, child: Text(op))).toList(),
+                            items: operacoesLista
+                                .map(
+                                  (op) => DropdownMenuItem(
+                                    value: op,
+                                    child: Text(op),
+                                  ),
+                                )
+                                .toList(),
                             onChanged: (value) => setState(() {
                               _filtroOperacao = value!;
                               _expandedPivos.clear();
-                              _operacoesFiltradasCache = null;
+                              _invalidarCaches();
                             }),
                           ),
                         ],
@@ -558,53 +809,143 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
+  /// Filtro de data — Opção B: dois campos separados (inicial / final).
   Widget _buildDataFilter() {
-    return InkWell(
-      onTap: () async {
-        final picked = await showDateRangePicker(
-          context: context,
-          firstDate: DateTime(2024),
-          lastDate: DateTime(2027),
-          initialDateRange: _filtroData,
-        );
-        if (picked != null) {
-          setState(() {
-            _filtroData = picked;
-            _expandedPivos.clear();
-            _operacoesFiltradasCache = null;
-          });
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.grey.shade300),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Icon(Icons.calendar_today, color: Colors.grey[600], size: 20),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                _filtroData == null 
-                    ? 'Selecionar período'
-                    : '${_formatarDataComAno(_filtroData!.start)} - ${_formatarDataComAno(_filtroData!.end)}',
-                style: TextStyle(fontSize: 14, color: _filtroData == null ? Colors.grey[600] : Colors.black87),
-              ),
+            const Text(
+              'Período',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            if (_filtroData != null)
-              IconButton(
-                icon: const Icon(Icons.close, size: 18),
+            const Spacer(),
+            if (_temFiltroData)
+              TextButton.icon(
                 onPressed: () {
                   setState(() {
-                    _filtroData = null;
+                    _dataInicio = null;
+                    _dataFim = null;
                     _expandedPivos.clear();
-                    _operacoesFiltradasCache = null;
+                    _invalidarCaches();
+                  });
+                },
+                icon: const Icon(Icons.close, size: 14),
+                label: const Text(
+                  'Limpar',
+                  style: TextStyle(fontSize: 12),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 28),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Expanded(
+              child: _buildDateField(
+                label: 'Data inicial',
+                value: _dataInicio,
+                onPick: (d) {
+                  setState(() {
+                    _dataInicio = d;
+                    if (_dataFim != null && _dataFim!.isBefore(d)) {
+                      _dataFim = d;
+                    }
+                    _expandedPivos.clear();
+                    _invalidarCaches();
+                  });
+                },
+                onClear: () {
+                  setState(() {
+                    _dataInicio = null;
+                    _expandedPivos.clear();
+                    _invalidarCaches();
                   });
                 },
               ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildDateField(
+                label: 'Data final',
+                value: _dataFim,
+                onPick: (d) {
+                  setState(() {
+                    _dataFim = d;
+                    if (_dataInicio != null && _dataInicio!.isAfter(d)) {
+                      _dataInicio = d;
+                    }
+                    _expandedPivos.clear();
+                    _invalidarCaches();
+                  });
+                },
+                onClear: () {
+                  setState(() {
+                    _dataFim = null;
+                    _expandedPivos.clear();
+                    _invalidarCaches();
+                  });
+                },
+              ),
+            ),
           ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDateField({
+    required String label,
+    required DateTime? value,
+    required ValueChanged<DateTime> onPick,
+    required VoidCallback onClear,
+  }) {
+    return InkWell(
+      onTap: () async {
+        final agora = DateTime.now();
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: value ?? agora,
+          firstDate: DateTime(2024),
+          lastDate: DateTime(2027),
+          helpText: label,
+        );
+        if (picked != null) {
+          onPick(picked);
+        }
+      },
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(fontSize: 12),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 12,
+          ),
+          suffixIcon: value != null
+              ? IconButton(
+                  icon: const Icon(Icons.close, size: 16),
+                  splashRadius: 16,
+                  onPressed: onClear,
+                )
+              : const Icon(Icons.calendar_today, size: 18),
+        ),
+        child: Text(
+          value != null ? _formatarDataComAno(value) : '—',
+          style: TextStyle(
+            fontSize: 14,
+            color: value != null ? Colors.black87 : Colors.grey[600],
+          ),
         ),
       ),
     );
@@ -614,7 +955,11 @@ class _PainelScreenState extends State<PainelScreen> {
     return Row(
       children: [
         _card('Concluído', resumo['Concluído'] ?? 0, _cores['Concluído']!),
-        _card('Em andamento', resumo['Em andamento'] ?? 0, _cores['Em andamento']!),
+        _card(
+          'Em andamento',
+          resumo['Em andamento'] ?? 0,
+          _cores['Em andamento']!,
+        ),
         _card('Planejada', resumo['Planejada'] ?? 0, _cores['Planejada']!),
         _card('Atrasada', resumo['Atrasada'] ?? 0, _cores['Atrasada']!),
         _card('Dispensada', resumo['Dispensada'] ?? 0, _cores['Dispensada']!),
@@ -627,13 +972,30 @@ class _PainelScreenState extends State<PainelScreen> {
       child: Container(
         height: 80,
         margin: const EdgeInsets.symmetric(horizontal: 4),
-        decoration: BoxDecoration(color: cor.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+        decoration: BoxDecoration(
+          color: cor.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(status, style: TextStyle(color: cor, fontWeight: FontWeight.w600, fontSize: 11)),
+            Text(
+              status,
+              style: TextStyle(
+                color: cor,
+                fontWeight: FontWeight.w600,
+                fontSize: 11,
+              ),
+            ),
             const SizedBox(height: 4),
-            Text(valor.toString(), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
+            Text(
+              valor.toString(),
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
           ],
         ),
       ),
@@ -641,94 +1003,132 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   Widget _buildGrafico(Map<String, int> resumo, int total) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 4)],
-      ),
-      child: Column(
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('Distribuição por Status', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
-          ),
-          const Divider(height: 0),
-          SizedBox(
-            height: 280,
-            child: total == 0
-                ? const Center(child: Text('Nenhum dado', style: TextStyle(color: Colors.grey)))
-                : Center(
-                    child: SizedBox(
-                      width: 260,
-                      height: 260,
-                      child: CustomPaint(painter: _PieChartPainter(resumo, _cores, total)),
+    return Column(
+      children: [
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 280,
+          child: total == 0
+              ? const Center(
+                  child: Text(
+                    'Nenhum dado',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              : Center(
+                  child: SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: CustomPaint(
+                      painter: _PieChartPainter(resumo, _cores, total),
                     ),
                   ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 16,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: _cores.entries.map((entry) {
-              final count = resumo[entry.key] ?? 0;
-              if (count == 0) return const SizedBox.shrink();
-              final percent = (count / total) * 100;
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(color: entry.value.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(width: 10, height: 10, decoration: BoxDecoration(color: entry.value, shape: BoxShape.circle)),
-                    const SizedBox(width: 6),
-                    Text('${entry.key}: $count (${percent.toStringAsFixed(0)}%)', style: const TextStyle(fontSize: 11, color: Colors.black87)),
-                  ],
                 ),
-              );
-            }).toList(),
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
+          children: _cores.entries.map((entry) {
+            final count = resumo[entry.key] ?? 0;
+            if (count == 0) return const SizedBox.shrink();
+            final percent = (count / total) * 100;
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: entry.value.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: entry.value,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${entry.key}: $count (${percent.toStringAsFixed(0)}%)',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 16),
+      ],
     );
   }
 
   Widget _buildInsights(Map<String, dynamic> insights) {
-    final totalOperacoes = (insights['operacoesConcluidas'] as int) + (insights['operacoesPendentes'] as int);
-    final totalUnicas = insights['totalOperacoesUnicas'] as int;
-    
-    return Container(
+    final pivos = insights['pivosEmParalelo'] as int;
+    final capacidade = insights['capacidadeTotal'] as double;
+
+    return Padding(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 4)],
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.insights, color: Colors.blue[700]),
-              const SizedBox(width: 8),
-              Text('Insights Operacionais', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue[700])),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(child: _insightCard(icon: Icons.check_circle, titulo: 'Total Realizado', valor: '${insights['totalRealizado'].toStringAsFixed(0)} ha', cor: Colors.green, subtitle: '${insights['operacoesConcluidas']} operações concluídas')),
+              Expanded(
+                child: _insightCard(
+                  icon: Icons.check_circle,
+                  titulo: 'Total Realizado',
+                  valor: '${insights['totalRealizado'].toStringAsFixed(0)} ha',
+                  cor: Colors.green,
+                  subtitle:
+                      '${insights['operacoesConcluidas']} operações concluídas',
+                ),
+              ),
               const SizedBox(width: 12),
-              Expanded(child: _insightCard(icon: Icons.schedule, titulo: 'Total a Executar', valor: '${insights['totalAExecutar'].toStringAsFixed(0)} ha', cor: Colors.orange, subtitle: '${insights['operacoesPendentes']} operações pendentes')),
+              Expanded(
+                child: _insightCard(
+                  icon: Icons.schedule,
+                  titulo: 'Total a Executar',
+                  valor: '${insights['totalAExecutar'].toStringAsFixed(0)} ha',
+                  cor: Colors.orange,
+                  subtitle:
+                      '${insights['operacoesPendentes']} operações pendentes',
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(child: _insightCard(icon: Icons.calendar_today, titulo: 'Tempo Necessário', valor: '${insights['diasAExecutar']} dias', cor: Colors.blue, subtitle: 'Considerando rendimento total')),
+              Expanded(
+                child: _insightCard(
+                  icon: Icons.calendar_today,
+                  titulo: 'Tempo Necessário',
+                  valor: '${insights['diasAExecutar']} dias',
+                  cor: Colors.blue,
+                  subtitle: pivos == 0
+                      ? 'Sem operações pendentes'
+                      : '$pivos pivô(s) em paralelo',
+                ),
+              ),
               const SizedBox(width: 12),
-              Expanded(child: _insightCard(icon: Icons.trending_up, titulo: 'Rendimento Total', valor: '${insights['rendimentoMedio'].toStringAsFixed(1)} ha/dia', cor: Colors.purple, subtitle: 'Soma de $totalUnicas operações únicas')),
+              Expanded(
+                child: _insightCard(
+                  icon: Icons.trending_up,
+                  titulo: 'Capacidade Total',
+                  valor: '${capacidade.toStringAsFixed(1)} ha/dia',
+                  cor: Colors.purple,
+                  subtitle: _filtroPivo != 'Todos'
+                      ? 'Gargalo do pivô (operação mais lenta)'
+                      : 'Soma única por operação padrão',
+                ),
+              ),
             ],
           ),
         ],
@@ -738,6 +1138,8 @@ class _PainelScreenState extends State<PainelScreen> {
 
   Widget _buildResumoPlantios() {
     final lista = _progressoPivos['lista'] as List;
+    const chave = 'resumoPlantios';
+    final isExpanded = _isSecaoExpandida(chave);
 
     if (lista.isEmpty) {
       return const SizedBox.shrink();
@@ -763,306 +1165,365 @@ class _PainelScreenState extends State<PainelScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.green.withOpacity(0.1),
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-              ),
+          InkWell(
+            onTap: () => _toggleSecao(chave),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.agriculture, color: Colors.green[700]),
-                    const SizedBox(width: 8),
-                    Text(
-                      _filtroData == null
-                          ? 'Resumo Geral dos Plantios'
-                          : 'Plantios previstos no período',
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.agriculture, color: Colors.green[700]),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _temFiltroData
+                          ? 'Plantios previstos no período'
+                          : 'Andamento das operações de preparo do solo',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                         color: Colors.black87,
                       ),
                     ),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    '$totalOperacoes operações',
-                    style: const TextStyle(fontSize: 12, color: Colors.black87),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '$totalOperacoes operações',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black87,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 4),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: Colors.grey[700],
+                  ),
+                ],
+              ),
             ),
           ),
-          ...lista.asMap().entries.map((entry) {
-            final index = entry.key;
-            final item = entry.value;
-            final pivoNome = item['nome'] as String;
-            final isExpanded = _expandedPivos['plantio_$pivoNome'] ?? false;
-            
-            final total = item['diasTotal'] as double;
-            final concluido = total == 0 ? 0 : item['diasConcluido'] / total;
-            final andamento = total == 0 ? 0 : item['diasAndamento'] / total;
-            final atrasado = total == 0 ? 0 : item['diasAtrasado'] / total;
-            final planejado = total == 0 ? 0 : item['diasPlanejado'] / total;
-            final executado = concluido + andamento;
-            final operacoesCount = item['operacoes'] as int;
-            final concluidasCount = item['concluidas'] as int;
-            final andamentoCount = item['andamento'] as int;
-            final planejadasCount = item['planejadas'] as int;
-            final atrasadasCount = item['atrasadas'] as int;
-            
-            final dataPlantio = item['plantio'] as DateTime?;
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 250),
+            crossFadeState: isExpanded
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            firstChild: Column(
+              children: lista.asMap().entries.map((entry) {
+                final index = entry.key;
+                final item = entry.value;
+                final pivoNome = item['nome'] as String;
+                final isExpandedPivo =
+                    _expandedPivos['plantio_$pivoNome'] ?? false;
 
-            return Column(
-              children: [
-                InkWell(
-                  onTap: () => setState(() {
-                    _expandedPivos['plantio_$pivoNome'] = !isExpanded;
-                  }),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: isExpanded ? Colors.green.withOpacity(0.05) : null,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          isExpanded ? Icons.expand_less : Icons.expand_more,
-                          color: Colors.grey,
+                final total = item['diasTotal'] as double;
+
+                final concluido = item['percentualConcluido'] as double? ?? 0.0;
+                final andamento = item['percentualAndamento'] as double? ?? 0.0;
+                final atrasado = item['percentualAtrasado'] as double? ?? 0.0;
+                final planejado = item['percentualPlanejado'] as double? ?? 0.0;
+                final executado = item['percentualExecutado'] as double? ?? 0.0;
+
+                final operacoesCount = item['operacoes'] as int;
+                final concluidasCount = item['concluidas'] as int;
+                final andamentoCount = item['andamento'] as int;
+                final planejadasCount = item['planejadas'] as int;
+                final atrasadasCount = item['atrasadas'] as int;
+                final dispensadasCount = item['dispensadas'] as int;
+                final operacoesExecutaveis =
+                    operacoesCount - dispensadasCount;
+
+                final dataPlantio = item['plantio'] as DateTime?;
+
+                return Column(
+                  children: [
+                    InkWell(
+                      onTap: () => setState(() {
+                        _expandedPivos['plantio_$pivoNome'] = !isExpandedPivo;
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                pivoNome,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.black87,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                '$concluidasCount de $operacoesCount operações concluídas • $andamentoCount em andamento • $planejadasCount planejadas • $atrasadasCount atrasadas',
-                                style: const TextStyle(fontSize: 12, color: Colors.grey),
-                              ),
-                              if (dataPlantio != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 2),
-                                  child: Text(
-                                    'Plantio: ${_formatarDataComAno(dataPlantio)} (${dataPlantio.difference(DateTime.now()).inDays} dias)',
-                                    style: TextStyle(
-                                      color: dataPlantio.difference(DateTime.now()).inDays < 15
-                                          ? Colors.red
-                                          : Colors.grey,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
+                        decoration: BoxDecoration(
+                          color: isExpandedPivo
+                              ? Colors.green.withOpacity(0.05)
+                              : null,
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.green.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '${(executado * 100).toStringAsFixed(0)}%',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.green[700],
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (isExpanded)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Divider(height: 0),
-                        const SizedBox(height: 12),
-                        
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: SizedBox(
-                            height: 24,
-                            child: Row(
-                              children: [
-                                if (concluido > 0)
-                                  Expanded(
-                                    flex: (concluido * 1000).round(),
-                                    child: Container(
-                                      color: Colors.green,
-                                      child: Center(
-                                        child: Text(
-                                          '${(concluido * 100).toStringAsFixed(0)}%',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                if (andamento > 0)
-                                  Expanded(
-                                    flex: (andamento * 1000).round(),
-                                    child: Container(
-                                      color: Colors.blue,
-                                      child: Center(
-                                        child: Text(
-                                          '${(andamento * 100).toStringAsFixed(0)}%',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                if (atrasado > 0)
-                                  Expanded(
-                                    flex: (atrasado * 1000).round(),
-                                    child: Container(
-                                      color: Colors.red,
-                                      child: Center(
-                                        child: Text(
-                                          '${(atrasado * 100).toStringAsFixed(0)}%',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                if (planejado > 0)
-                                  Expanded(
-                                    flex: (planejado * 1000).round(),
-                                    child: Container(
-                                      color: Colors.amber,
-                                      child: Center(
-                                        child: Text(
-                                          '${(planejado * 100).toStringAsFixed(0)}%',
-                                          style: const TextStyle(
-                                            color: Colors.black87,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        
-                        const SizedBox(height: 12),
-                        
-                        Wrap(
-                          spacing: 14,
-                          runSpacing: 8,
+                        child: Row(
                           children: [
-                            _buildLegendItemWithCount(
-                              '🟩', 
-                              'Concluído', 
-                              (concluido * 100).toStringAsFixed(0), 
-                              concluidasCount,
-                              Colors.green
+                            Icon(
+                              isExpandedPivo
+                                  ? Icons.expand_less
+                                  : Icons.expand_more,
+                              color: Colors.grey,
                             ),
-                            _buildLegendItemWithCount(
-                              '🟦', 
-                              'Em andamento', 
-                              (andamento * 100).toStringAsFixed(0), 
-                              andamentoCount,
-                              Colors.blue
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    pivoNome,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '$concluidasCount de $operacoesExecutaveis operações concluídas • '
+                                    '$andamentoCount em andamento • '
+                                    '$planejadasCount planejadas • '
+                                    '$atrasadasCount atrasadas'
+                                    '${dispensadasCount > 0 ? ' • $dispensadasCount dispensadas' : ''}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                  if (dataPlantio != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        'Plantio: ${_formatarDataComAno(dataPlantio)} '
+                                        '(${dataPlantio.difference(DateTime.now()).inDays} dias)',
+                                        style: TextStyle(
+                                          color: dataPlantio
+                                                      .difference(
+                                                        DateTime.now(),
+                                                      )
+                                                      .inDays <
+                                                  15
+                                              ? Colors.red
+                                              : Colors.grey,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
-                            _buildLegendItemWithCount(
-                              '🟥', 
-                              'Atrasado', 
-                              (atrasado * 100).toStringAsFixed(0), 
-                              atrasadasCount,
-                              Colors.red
-                            ),
-                            _buildLegendItemWithCount(
-                              '🟨', 
-                              'Planejado', 
-                              (planejado * 100).toStringAsFixed(0), 
-                              planejadasCount,
-                              Colors.amber
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '${(executado * 100).toStringAsFixed(0)}%',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.green[700],
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                           ],
                         ),
-                        
-                        const SizedBox(height: 8),
-                        
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.withOpacity(0.05),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
-                            children: [
-                              _buildMetricaItem(
-                                'Total Dias',
-                                '${total.toStringAsFixed(0)}',
-                                Colors.grey[600]!,
-                              ),
-                              _buildMetricaItem(
-                                'Concluídos',
-                                '$concluidasCount/$operacoesCount',
-                                Colors.green,
-                              ),
-                              _buildMetricaItem(
-                                'Execução',
-                                '${(executado * 100).toStringAsFixed(0)}%',
-                                Colors.green[700]!,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                if (index < lista.length - 1) const Divider(height: 0, indent: 16),
-              ],
-            );
-          }),
+                    if (isExpandedPivo)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Divider(height: 0),
+                            const SizedBox(height: 12),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: SizedBox(
+                                height: 24,
+                                child: Row(
+                                  children: [
+                                    if (concluido > 0)
+                                      Expanded(
+                                        flex: (concluido * 1000).round(),
+                                        child: Container(
+                                          color: Colors.green,
+                                          child: Center(
+                                            child: Text(
+                                              '${(concluido * 100).toStringAsFixed(0)}%',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    if (andamento > 0)
+                                      Expanded(
+                                        flex: (andamento * 1000).round(),
+                                        child: Container(
+                                          color: Colors.blue,
+                                          child: Center(
+                                            child: Text(
+                                              '${(andamento * 100).toStringAsFixed(0)}%',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    if (atrasado > 0)
+                                      Expanded(
+                                        flex: (atrasado * 1000).round(),
+                                        child: Container(
+                                          color: Colors.red,
+                                          child: Center(
+                                            child: Text(
+                                              '${(atrasado * 100).toStringAsFixed(0)}%',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    if (planejado > 0)
+                                      Expanded(
+                                        flex: (planejado * 1000).round(),
+                                        child: Container(
+                                          color: Colors.amber,
+                                          child: Center(
+                                            child: Text(
+                                              '${(planejado * 100).toStringAsFixed(0)}%',
+                                              style: const TextStyle(
+                                                color: Colors.black87,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 14,
+                              runSpacing: 8,
+                              children: [
+                                _buildLegendItemWithCount(
+                                  '🟩',
+                                  'Concluído',
+                                  (concluido * 100).toStringAsFixed(0),
+                                  concluidasCount,
+                                  Colors.green,
+                                ),
+                                _buildLegendItemWithCount(
+                                  '🟦',
+                                  'Em andamento',
+                                  (andamento * 100).toStringAsFixed(0),
+                                  andamentoCount,
+                                  Colors.blue,
+                                ),
+                                _buildLegendItemWithCount(
+                                  '🟥',
+                                  'Atrasado',
+                                  (atrasado * 100).toStringAsFixed(0),
+                                  atrasadasCount,
+                                  Colors.red,
+                                ),
+                                _buildLegendItemWithCount(
+                                  '🟨',
+                                  'Planejado',
+                                  (planejado * 100).toStringAsFixed(0),
+                                  planejadasCount,
+                                  Colors.amber,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceAround,
+                                children: [
+                                  _buildMetricaItem(
+                                    'Total Dias',
+                                    '${total.toStringAsFixed(0)}',
+                                    Colors.grey[600]!,
+                                  ),
+                                  _buildMetricaItem(
+                                    'Concluídos',
+                                    '$concluidasCount/$operacoesExecutaveis',
+                                    Colors.green,
+                                  ),
+                                  _buildMetricaItem(
+                                    'Execução',
+                                    '${(executado * 100).toStringAsFixed(0)}%',
+                                    Colors.green[700]!,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (index < lista.length - 1)
+                      const Divider(height: 0, indent: 16),
+                  ],
+                );
+              }).toList(),
+            ),
+            secondChild: const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildLegendItemWithCount(String icon, String label, String percent, int count, Color color) {
+  Widget _buildLegendItemWithCount(
+    String icon,
+    String label,
+    String percent,
+    int count,
+    Color color,
+  ) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -1100,19 +1561,26 @@ class _PainelScreenState extends State<PainelScreen> {
         ),
         Text(
           label,
-          style: TextStyle(
-            fontSize: 11,
-            color: Colors.grey[600],
-          ),
+          style: TextStyle(fontSize: 11, color: Colors.grey[600]),
         ),
       ],
     );
   }
 
-  Widget _insightCard({required IconData icon, required String titulo, required String valor, required Color cor, String? subtitle}) {
+  Widget _insightCard({
+    required IconData icon,
+    required String titulo,
+    required String valor,
+    required Color cor,
+    String? subtitle,
+  }) {
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: cor.withOpacity(0.05), borderRadius: BorderRadius.circular(12), border: Border.all(color: cor.withOpacity(0.2))),
+      decoration: BoxDecoration(
+        color: cor.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cor.withOpacity(0.2)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1120,149 +1588,274 @@ class _PainelScreenState extends State<PainelScreen> {
             children: [
               Icon(icon, color: cor, size: 20),
               const SizedBox(width: 8),
-              Expanded(child: Text(titulo, style: TextStyle(fontSize: 12, color: Colors.grey[600]))),
+              Expanded(
+                child: Text(
+                  titulo,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),
-          Text(valor, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: cor)),
-          if (subtitle != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(subtitle, style: TextStyle(fontSize: 11, color: Colors.grey[500]))),
+          Text(
+            valor,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: cor,
+            ),
+          ),
+          if (subtitle != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                subtitle,
+                style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+              ),
+            ),
         ],
       ),
     );
   }
 
   Widget _buildSecaoOperacoes(String status, Color cor) {
+    final chave = 'ops_$status';
+    final isExpanded = _isSecaoExpandida(chave);
+
     List<OperacaoExecutada> operacoesStatus = [];
     for (var op in _operacoesFiltradas) {
       if (op.getStatusText() == status) {
         operacoesStatus.add(op);
       }
     }
-    
+
     operacoesStatus.sort((a, b) {
       DateTime? dataA;
       DateTime? dataB;
-      
+
       if (a.status == 'concluida') {
         dataA = a.dataFimUltima;
       } else {
         dataA = a.getDataInicioJanelaCalculada();
       }
-      
+
       if (b.status == 'concluida') {
         dataB = b.dataFimUltima;
       } else {
         dataB = b.getDataInicioJanelaCalculada();
       }
-      
+
       final dateA = dataA ?? DateTime(3000);
       final dateB = dataB ?? DateTime(3000);
       return dateA.compareTo(dateB);
     });
-    
+
     final Map<String, List<OperacaoExecutada>> operacoesPorPivo = {};
     for (var op in operacoesStatus) {
       final pivo = op.pivoNome ?? 'Sem Pivô';
       operacoesPorPivo.putIfAbsent(pivo, () => []).add(op);
     }
-    
+
     final pivosLista = operacoesPorPivo.keys.toList()..sort();
     final totalOperacoes = operacoesStatus.length;
-    
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 4)],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 4,
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: cor.withOpacity(0.1), borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), topRight: Radius.circular(16))),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Container(width: 12, height: 12, decoration: BoxDecoration(color: cor, shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    Text('Operações $status', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
-                  ],
+          InkWell(
+            onTap: () => _toggleSecao(chave),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cor.withOpacity(0.1),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(color: cor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)),
-                  child: Text('$totalOperacoes operações', style: const TextStyle(fontSize: 12, color: Colors.black87)),
-                ),
-              ],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: cor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Operações $status',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: cor.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '$totalOperacoes operações',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: Colors.grey[700],
+                  ),
+                ],
+              ),
             ),
           ),
-          if (pivosLista.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(32),
-              child: Center(child: Text('Nenhuma operação', style: TextStyle(color: Colors.grey))),
-            )
-          else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: pivosLista.length,
-              itemBuilder: (context, index) {
-                final pivoNome = pivosLista[index];
-                final operacoes = operacoesPorPivo[pivoNome]!;
-                final isExpanded = _expandedPivos['${status}_$pivoNome'] ?? false;
-                
-                double areaTotalPivo = 0;
-                int diasTotaisPivo = 0;
-                for (var op in operacoes) {
-                  areaTotalPivo += op.areaTotal ?? 0;
-                  diasTotaisPivo += op.getDiasNecessarios();
-                }
-                
-                return Column(
-                  children: [
-                    InkWell(
-                      onTap: () => setState(() => _expandedPivos['${status}_$pivoNome'] = !isExpanded),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        decoration: BoxDecoration(color: isExpanded ? cor.withOpacity(0.05) : null),
-                        child: Row(
-                          children: [
-                            Icon(isExpanded ? Icons.expand_less : Icons.expand_more, color: Colors.grey),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 250),
+            crossFadeState: isExpanded
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            firstChild: pivosLista.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(
+                      child: Text(
+                        'Nenhuma operação',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: pivosLista.length,
+                    itemBuilder: (context, index) {
+                      final pivoNome = pivosLista[index];
+                      final operacoes = operacoesPorPivo[pivoNome]!;
+                      final isExpandedPivo =
+                          _expandedPivos['${status}_$pivoNome'] ?? false;
+
+                      double areaTotalPivo = 0;
+                      int diasTotaisPivo = 0;
+                      for (var op in operacoes) {
+                        areaTotalPivo += op.areaTotal ?? 0;
+                        diasTotaisPivo += op.getDiasNecessarios();
+                      }
+
+                      return Column(
+                        children: [
+                          InkWell(
+                            onTap: () => setState(
+                              () => _expandedPivos['${status}_$pivoNome'] =
+                                  !isExpandedPivo,
+                            ),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isExpandedPivo
+                                    ? cor.withOpacity(0.05)
+                                    : null,
+                              ),
+                              child: Row(
                                 children: [
-                                  Text(pivoNome, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
-                                  const SizedBox(height: 4),
-                                  Text('${operacoes.length} operações • ${areaTotalPivo.toStringAsFixed(0)} ha${status != 'Concluído' && status != 'Dispensada' ? ' • $diasTotaisPivo dias' : ''}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                  Icon(
+                                    isExpandedPivo
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    color: Colors.grey,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          pivoNome,
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.black87,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${operacoes.length} operações • ${areaTotalPivo.toStringAsFixed(0)} ha${status != 'Concluído' && status != 'Dispensada' ? ' • $diasTotaisPivo dias' : ''}',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: cor.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      status,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: cor,
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(color: cor.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
-                              child: Text(status, style: TextStyle(fontSize: 11, color: cor)),
+                          ),
+                          if (isExpandedPivo)
+                            Column(
+                              children: [
+                                const Divider(height: 0, indent: 16),
+                                ...operacoes.map(
+                                  (op) => _buildOperacaoTile(op, cor),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (isExpanded)
-                      Column(
-                        children: [
-                          const Divider(height: 0, indent: 16),
-                          ...operacoes.map((op) => _buildOperacaoTile(op, cor)),
+                          if (index < pivosLista.length - 1)
+                            const Divider(height: 0, indent: 16),
                         ],
-                      ),
-                    if (index < pivosLista.length - 1) const Divider(height: 0, indent: 16),
-                  ],
-                );
-              },
-            ),
+                      );
+                    },
+                  ),
+            secondChild: const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     );
@@ -1284,7 +1877,9 @@ class _PainelScreenState extends State<PainelScreen> {
       decoration: BoxDecoration(
         color: op.corDestaqueInconsistencia,
         borderRadius: BorderRadius.circular(8),
-        border: isInconsistente ? Border.all(color: Colors.red, width: 1.5) : null,
+        border: isInconsistente
+            ? Border.all(color: Colors.red, width: 1.5)
+            : null,
       ),
       child: ListTile(
         leading: Container(
@@ -1303,20 +1898,29 @@ class _PainelScreenState extends State<PainelScreen> {
                 style: TextStyle(
                   fontWeight: FontWeight.w500,
                   color: Colors.black87,
-                  decoration: op.status == 'dispensada' ? TextDecoration.lineThrough : null,
+                  decoration: op.status == 'dispensada'
+                      ? TextDecoration.lineThrough
+                      : null,
                 ),
               ),
             ),
             if (isInconsistente)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.red,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: const Text(
                   'ATRASADA',
-                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
           ],
@@ -1330,16 +1934,28 @@ class _PainelScreenState extends State<PainelScreen> {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
                   mensagemAlerta,
-                  style: const TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             Wrap(
               spacing: 12,
               runSpacing: 4,
               children: [
-                _infoChip(Icons.square_foot, '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas}x)', cor),
-                _infoChip(Icons.speed, '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia', cor),
-                if (op.status != 'dispensada' && op.status != 'concluida') 
+                _infoChip(
+                  Icons.square_foot,
+                  '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas}x)',
+                  cor,
+                ),
+                _infoChip(
+                  Icons.speed,
+                  '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia',
+                  cor,
+                ),
+                if (op.status != 'dispensada' && op.status != 'concluida')
                   _infoChip(Icons.timer, tempoPrevisto, cor),
               ],
             ),
@@ -1358,7 +1974,9 @@ class _PainelScreenState extends State<PainelScreen> {
                     style: TextStyle(
                       fontSize: 11,
                       color: isInconsistente ? Colors.red : Colors.grey,
-                      fontWeight: isInconsistente ? FontWeight.bold : FontWeight.normal,
+                      fontWeight: isInconsistente
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
                   ),
                 ],
@@ -1369,9 +1987,19 @@ class _PainelScreenState extends State<PainelScreen> {
                 padding: const EdgeInsets.only(top: 4),
                 child: Row(
                   children: [
-                    Icon(Icons.play_arrow, size: 12, color: Colors.blue),
+                    const Icon(
+                      Icons.play_arrow,
+                      size: 12,
+                      color: Colors.blue,
+                    ),
                     const SizedBox(width: 4),
-                    Text('Iniciado em: ${_formatarDataComAno(dataInicio)}', style: const TextStyle(fontSize: 11, color: Colors.blue)),
+                    Text(
+                      'Iniciado em: ${_formatarDataComAno(dataInicio)}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1384,9 +2012,19 @@ class _PainelScreenState extends State<PainelScreen> {
                     if (dataInicio != null)
                       Row(
                         children: [
-                          Icon(Icons.play_arrow, size: 12, color: Colors.green),
+                          const Icon(
+                            Icons.play_arrow,
+                            size: 12,
+                            color: Colors.green,
+                          ),
                           const SizedBox(width: 4),
-                          Text('Iniciado em: ${_formatarDataComAno(dataInicio)}', style: const TextStyle(fontSize: 11, color: Colors.green)),
+                          Text(
+                            'Iniciado em: ${_formatarDataComAno(dataInicio)}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.green,
+                            ),
+                          ),
                         ],
                       ),
                     if (dataConclusao != null)
@@ -1394,19 +2032,35 @@ class _PainelScreenState extends State<PainelScreen> {
                         padding: const EdgeInsets.only(top: 2),
                         child: Row(
                           children: [
-                            Icon(Icons.check_circle, size: 12, color: Colors.green),
+                            const Icon(
+                              Icons.check_circle,
+                              size: 12,
+                              color: Colors.green,
+                            ),
                             const SizedBox(width: 4),
-                            Text('Concluído em: ${_formatarDataComAno(dataConclusao)}', style: const TextStyle(fontSize: 11, color: Colors.green)),
+                            Text(
+                              'Concluído em: ${_formatarDataComAno(dataConclusao)}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.green,
+                              ),
+                            ),
                           ],
                         ),
                       ),
                   ],
                 ),
               ),
-            if (op.numeroPassadas != null && op.numeroPassadas! > 1 && op.status != 'concluida' && op.status != 'dispensada')
+            if (op.numeroPassadas != null &&
+                op.numeroPassadas! > 1 &&
+                op.status != 'concluida' &&
+                op.status != 'dispensada')
               const Padding(
                 padding: EdgeInsets.only(top: 4),
-                child: Text('⚠️ Múltiplas passadas necessárias', style: TextStyle(fontSize: 10, color: Colors.orange)),
+                child: Text(
+                  '⚠️ Múltiplas passadas necessárias',
+                  style: TextStyle(fontSize: 10, color: Colors.orange),
+                ),
               ),
           ],
         ),
@@ -1417,13 +2071,19 @@ class _PainelScreenState extends State<PainelScreen> {
   Widget _infoChip(IconData icon, String label, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, size: 10, color: color),
           const SizedBox(width: 2),
-          Text(label, style: const TextStyle(fontSize: 10, color: Colors.black87)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 10, color: Colors.black87),
+          ),
         ],
       ),
     );
@@ -1442,7 +2102,13 @@ class _PieChartPainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2.2;
     double startAngle = -pi / 2;
-    final statuses = ['Concluído', 'Em andamento', 'Planejada', 'Atrasada', 'Dispensada'];
+    final statuses = [
+      'Concluído',
+      'Em andamento',
+      'Planejada',
+      'Atrasada',
+      'Dispensada',
+    ];
 
     for (var status in statuses) {
       final value = dados[status] ?? 0;
@@ -1452,23 +2118,65 @@ class _PieChartPainter extends CustomPainter {
       final color = cores[status]!;
       final percent = (value / total) * 100;
 
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, Paint()..color = color);
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, Paint()..color = Colors.white.withOpacity(0.4)..style = PaintingStyle.stroke..strokeWidth = 1.5);
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        startAngle,
+        sweep,
+        true,
+        Paint()..color = color,
+      );
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        startAngle,
+        sweep,
+        true,
+        Paint()
+          ..color = Colors.white.withOpacity(0.4)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
 
       if (percent > 5) {
         final midAngle = startAngle + sweep / 2;
         final textRadius = radius * 0.65;
-        final textOffset = Offset(center.dx + cos(midAngle) * textRadius, center.dy + sin(midAngle) * textRadius);
-        final tp = TextPainter(text: TextSpan(text: "${percent.toStringAsFixed(0)}%", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)), textDirection: TextDirection.ltr);
+        final textOffset = Offset(
+          center.dx + cos(midAngle) * textRadius,
+          center.dy + sin(midAngle) * textRadius,
+        );
+        final tp = TextPainter(
+          text: TextSpan(
+            text: "${percent.toStringAsFixed(0)}%",
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
         tp.layout();
-        final textRect = Rect.fromCenter(center: textOffset, width: tp.width + 6, height: tp.height + 4);
-        canvas.drawRRect(RRect.fromRectAndRadius(textRect, const Radius.circular(4)), Paint()..color = Colors.black.withOpacity(0.5));
-        tp.paint(canvas, Offset(textOffset.dx - tp.width / 2, textOffset.dy - tp.height / 2));
+        final textRect = Rect.fromCenter(
+          center: textOffset,
+          width: tp.width + 6,
+          height: tp.height + 4,
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(textRect, const Radius.circular(4)),
+          Paint()..color = Colors.black.withOpacity(0.5),
+        );
+        tp.paint(
+          canvas,
+          Offset(textOffset.dx - tp.width / 2, textOffset.dy - tp.height / 2),
+        );
       }
       startAngle += sweep;
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _PieChartPainter oldDelegate) {
+    return oldDelegate.total != total ||
+        oldDelegate.dados != dados ||
+        oldDelegate.cores != cores;
+  }
 }

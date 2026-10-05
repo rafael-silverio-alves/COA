@@ -5,7 +5,6 @@ import '../services/app_service.dart';
 import 'painel_screen.dart';
 import 'operacoes_screen.dart';
 import 'pivos_screen.dart';
-import 'plantio_screen.dart';
 
 class MainScreen extends StatefulWidget {
   final AppService service;
@@ -24,7 +23,7 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => _isRefreshing = true);
     await widget.service.carregarOperacoes(forceReload: true);
     setState(() => _isRefreshing = false);
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('✅ Dados recarregados com sucesso!')),
@@ -46,10 +45,9 @@ class _MainScreenState extends State<MainScreen> {
         PainelScreen(service: widget.service),
         OperacoesScreen(service: widget.service),
         const PivosScreen(),
-        const PlantioScreen(),
       ];
-      _titulosAbas = ['Painel', 'Operações', 'Pivôs', 'Novo Plantio'];
-      _iconesAbas = [Icons.dashboard, Icons.agriculture, Icons.grass, Icons.add_circle];
+      _titulosAbas = ['Painel', 'Operações', 'Pivôs'];
+      _iconesAbas = [Icons.dashboard, Icons.agriculture, Icons.grass];
     } else {
       _telas = [
         PainelScreen(service: widget.service),
@@ -75,7 +73,10 @@ class _MainScreenState extends State<MainScreen> {
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
                   )
                 : const Icon(Icons.refresh),
             onPressed: _isRefreshing ? null : _refreshAllData,

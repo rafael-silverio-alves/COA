@@ -16,21 +16,21 @@ class SupabaseService {
 
   Future<void> init() async {
     if (_isInitialized) return;
-    
+
     await dotenv.load();
-    
+
     final supabaseUrl = dotenv.env['SUPABASE_URL'];
     final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'];
-    
+
     if (supabaseUrl == null || supabaseAnonKey == null) {
       throw Exception('Credenciais do Supabase não encontradas');
     }
-    
+
     await Supabase.initialize(
       url: supabaseUrl,
       anonKey: supabaseAnonKey,
     );
-    
+
     _supabase = Supabase.instance.client;
     _isInitialized = true;
     print('✅ Supabase inicializado com sucesso');
@@ -43,9 +43,9 @@ class SupabaseService {
 
   String _normalizarString(String texto) {
     if (texto.isEmpty) return texto;
-    
+
     String resultado = texto;
-    
+
     final map = {
       'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a',
       'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
@@ -60,14 +60,14 @@ class SupabaseService {
       'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
       'Ç': 'C'
     };
-    
+
     map.forEach((key, value) {
       resultado = resultado.replaceAll(key, value);
     });
-    
+
     resultado = resultado.trim();
     resultado = resultado.replaceAll(RegExp(r'\s+'), ' ');
-    
+
     return resultado;
   }
 
@@ -107,6 +107,31 @@ class SupabaseService {
       'localizacao': localizacao,
       'area_total': areaTotal,
     });
+  }
+
+  /// Cria um pivô e retorna o id gerado.
+  /// Usado quando é preciso encadear a criação de uma safra logo em seguida.
+  Future<String> addPivoRetornandoId({
+    required String nome,
+    required String? localizacao,
+    required double areaTotal,
+  }) async {
+    try {
+      final response = await _supabase
+          .from('pivos')
+          .insert({
+            'nome': nome,
+            'localizacao': localizacao,
+            'area_total': areaTotal,
+          })
+          .select('id')
+          .single();
+
+      return response['id'] as String;
+    } catch (e) {
+      print('❌ Erro ao cadastrar pivô: $e');
+      rethrow;
+    }
   }
 
   Future<void> deletePivo(String id) async {
@@ -154,22 +179,57 @@ class SupabaseService {
     }
   }
 
+  /// Busca todas as safras de um pivô (com join em pivos e culturas).
+  Future<List<Safra>> getSafrasDoPivo(String pivoId) async {
+    try {
+      final response = await _supabase
+          .from('safras')
+          .select('*, pivos(*), culturas(*)')
+          .eq('pivo_id', pivoId)
+          .order('data_plantio', ascending: false);
+
+      return response.map((data) => Safra.fromMap(data)).toList();
+    } catch (e) {
+      print('Erro ao buscar safras do pivô $pivoId: $e');
+      return [];
+    }
+  }
+
+  /// Atualiza data_plantio e ano_safra de uma safra.
+  Future<void> updateSafra({
+    required String safraId,
+    required DateTime dataPlantio,
+    String? anoSafra,
+  }) async {
+    try {
+      await _supabase.from('safras').update({
+        'data_plantio': dataPlantio.toIso8601String().split('T').first,
+        'ano_safra': anoSafra,
+      }).eq('id', safraId);
+
+      print('✅ Safra $safraId atualizada');
+    } catch (e) {
+      print('❌ Erro ao atualizar safra $safraId: $e');
+      rethrow;
+    }
+  }
+
   // ========== OPERAÇÕES EXECUTADAS COM PAGINAÇÃO ==========
   Future<List<OperacaoExecutada>> getOperacoesExecutadas() async {
     try {
       print('📡 Buscando operações executadas com paginação...');
-      
+
       int pageSize = 1000;
       int page = 0;
       List<Map<String, dynamic>> todasOperacoes = [];
       bool hasMore = true;
-      
+
       while (hasMore) {
         final from = page * pageSize;
         final to = (page + 1) * pageSize - 1;
-        
+
         print('📄 Carregando página ${page + 1} (registros $from a $to)...');
-        
+
         final response = await _supabase
             .from('operacoes_executadas')
             .select('''
@@ -181,14 +241,14 @@ class SupabaseService {
               operacoes_padrao!inner (*)
             ''')
             .range(from, to);
-        
+
         if (response.isEmpty) {
           hasMore = false;
           print('📄 Fim dos registros na página ${page + 1}');
         } else {
           print('📄 Página ${page + 1}: ${response.length} registros');
           todasOperacoes.addAll(response);
-          
+
           if (response.length < pageSize) {
             hasMore = false;
           } else {
@@ -196,70 +256,75 @@ class SupabaseService {
           }
         }
       }
-      
+
       print('📊 Total de registros carregados: ${todasOperacoes.length}');
-      
+
       if (todasOperacoes.isEmpty) {
         print('⚠️ Nenhuma operação executada encontrada!');
         return [];
       }
-      
+
       final operacoes = <OperacaoExecutada>[];
       int operacoesIgnoradas = 0;
-      
+
       for (var data in todasOperacoes) {
         try {
           final safraData = data['safras'];
           final pivoData = safraData?['pivos'];
           final opPadraoData = data['operacoes_padrao'];
-          
+
           if (safraData == null || opPadraoData == null) {
             operacoesIgnoradas++;
             continue;
           }
-          
-          final dataPlantio = safraData['data_plantio'] != null 
-              ? DateTime.tryParse(safraData['data_plantio']) 
+
+          final dataPlantio = safraData['data_plantio'] != null
+              ? DateTime.tryParse(safraData['data_plantio'])
               : null;
-          
+
           final janelaInicioDias = opPadraoData['janela_inicio'] as int?;
           final janelaFimDias = opPadraoData['janela_fim'] as int?;
-          final diasAntesPlantio = opPadraoData['dias_antes_plantio'] as int? ?? 0;
-          
+          final diasAntesPlantio =
+              opPadraoData['dias_antes_plantio'] as int? ?? 0;
+
           DateTime? dataInicioJanela;
           DateTime? dataFimJanela;
-          
+
           if (dataPlantio != null) {
             if (janelaInicioDias != null) {
-              dataInicioJanela = dataPlantio.add(Duration(days: janelaInicioDias));
+              dataInicioJanela =
+                  dataPlantio.add(Duration(days: janelaInicioDias));
             } else if (diasAntesPlantio != null) {
-              dataInicioJanela = dataPlantio.add(Duration(days: diasAntesPlantio));
+              dataInicioJanela =
+                  dataPlantio.add(Duration(days: diasAntesPlantio));
             }
-            
+
             if (janelaFimDias != null) {
               dataFimJanela = dataPlantio.add(Duration(days: janelaFimDias));
             } else if (dataInicioJanela != null) {
               dataFimJanela = dataInicioJanela.add(const Duration(days: 7));
             }
           }
-          
-          if (dataInicioJanela != null && dataFimJanela != null && dataInicioJanela.isAfter(dataFimJanela)) {
+
+          if (dataInicioJanela != null &&
+              dataFimJanela != null &&
+              dataInicioJanela.isAfter(dataFimJanela)) {
             final temp = dataInicioJanela;
             dataInicioJanela = dataFimJanela;
             dataFimJanela = temp;
           }
-          
+
           final op = OperacaoExecutada(
             id: data['id'] ?? '',
             safraId: data['safra_id'] ?? '',
             operacaoPadraoId: data['operacao_padrao_id'] ?? '',
             dataInicioJanela: dataInicioJanela,
             dataFimJanela: dataFimJanela,
-            dataInicioPrimeira: data['data_inicio_primeira'] != null 
-                ? DateTime.tryParse(data['data_inicio_primeira']) 
+            dataInicioPrimeira: data['data_inicio_primeira'] != null
+                ? DateTime.tryParse(data['data_inicio_primeira'])
                 : null,
-            dataFimUltima: data['data_fim_ultima'] != null 
-                ? DateTime.tryParse(data['data_fim_ultima']) 
+            dataFimUltima: data['data_fim_ultima'] != null
+                ? DateTime.tryParse(data['data_fim_ultima'])
                 : null,
             areaExecutada: (data['area_executada'] as num?)?.toDouble(),
             status: data['status'] ?? 'planejada',
@@ -268,41 +333,45 @@ class SupabaseService {
             janelaInicioDias: janelaInicioDias,
             janelaFimDias: janelaFimDias,
           );
-          
-          op.pivoNome = _normalizarString(pivoData?['nome'] as String? ?? 'Sem Pivô');
+
+          op.pivoNome =
+              _normalizarString(pivoData?['nome'] as String? ?? 'Sem Pivô');
           op.areaTotal = (pivoData?['area_total'] as num?)?.toDouble() ?? 0;
           op.dataPlantio = dataPlantio;
-          op.operacaoNome = _normalizarString(opPadraoData['nome'] as String? ?? 'Sem nome');
-          op.rendimentoHaDia = (opPadraoData['rendimento_ha_dia'] as num?)?.toDouble() ?? 15.0;
+          op.operacaoNome =
+              _normalizarString(opPadraoData['nome'] as String? ?? 'Sem nome');
+          op.rendimentoHaDia =
+              (opPadraoData['rendimento_ha_dia'] as num?)?.toDouble() ?? 15.0;
           op.diasAntesPlantio = diasAntesPlantio;
           op.numeroPassadas = opPadraoData['numero_passadas'] as int? ?? 1;
-          op.intervaloEntrePassadas = opPadraoData['intervalo_entre_passadas'] as int? ?? 0;
-          
+          op.intervaloEntrePassadas =
+              opPadraoData['intervalo_entre_passadas'] as int? ?? 0;
+
           operacoes.add(op);
-          
         } catch (e) {
           print('  ❌ Erro ao processar operação: $e');
           operacoesIgnoradas++;
         }
       }
-      
+
       print('✅ Operações processadas: ${operacoes.length}');
       if (operacoesIgnoradas > 0) {
         print('⚠️ Operações ignoradas: $operacoesIgnoradas');
       }
-      
+
       // DIAGNÓSTICO FINAL
       print('');
       print('📊 RESUMO FINAL DO CARREGAMENTO:');
       print('   Total de registros no Supabase: ${todasOperacoes.length}');
       print('   Total de operações carregadas: ${operacoes.length}');
-      
+
       if (operacoes.length < todasOperacoes.length) {
-        print('⚠️ ALERTA: ${todasOperacoes.length - operacoes.length} registros foram ignorados!');
+        print(
+          '⚠️ ALERTA: ${todasOperacoes.length - operacoes.length} registros foram ignorados!',
+        );
       }
-      
+
       return operacoes;
-      
     } catch (e) {
       print('❌ Erro ao buscar operações executadas: $e');
       return [];
@@ -314,7 +383,12 @@ class SupabaseService {
     return '${data.day}/${data.month}/${data.year}';
   }
 
-  Future<void> updateOperacaoStatus(String id, String status, {DateTime? dataInicio, DateTime? dataFim}) async {
+  Future<void> updateOperacaoStatus(
+    String id,
+    String status, {
+    DateTime? dataInicio,
+    DateTime? dataFim,
+  }) async {
     try {
       final updates = <String, dynamic>{
         'status': status,
@@ -326,10 +400,12 @@ class SupabaseService {
       if (dataFim != null) {
         updates['data_fim_ultima'] = dataFim.toIso8601String();
       }
-      
-      await _supabase.from('operacoes_executadas').update(updates).eq('id', id);
+
+      await _supabase
+          .from('operacoes_executadas')
+          .update(updates)
+          .eq('id', id);
       print('✅ Status da operação $id atualizado para $status');
-      
     } catch (e) {
       print('❌ Erro ao atualizar status: $e');
       rethrow;
@@ -350,10 +426,11 @@ class SupabaseService {
           'p_pivo_id': pivoId,
           'p_cultura_id': culturaId,
           'p_data_plantio': dataPlantio.toIso8601String().split('T')[0],
-          'p_ano_safra': anoSafra ?? '${dataPlantio.year}/${dataPlantio.year + 1}',
+          'p_ano_safra':
+              anoSafra ?? '${dataPlantio.year}/${dataPlantio.year + 1}',
         },
       );
-      
+
       print('✅ Plantio cadastrado com sucesso! Safra ID: $response');
     } catch (e) {
       print('❌ Erro ao cadastrar plantio: $e');
