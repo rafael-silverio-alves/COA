@@ -6,10 +6,25 @@ import 'dart:html' as html;
 import '../models/operacao_executada.dart';
 
 class PdfService {
+  // Paleta enterprise
+  static const PdfColor _grafite = PdfColor.fromInt(0xFF1F2937);
+  static const PdfColor _grafiteClaro = PdfColor.fromInt(0xFF374151);
+  static const PdfColor _cinza = PdfColor.fromInt(0xFF6B7280);
+  static const PdfColor _cinzaClaro = PdfColor.fromInt(0xFFF3F4F6);
+  static const PdfColor _borda = PdfColor.fromInt(0xFFE5E7EB);
+  static const PdfColor _branco = PdfColors.white;
+  static const PdfColor _textoSuave = PdfColor.fromInt(0xFFD1D5DB);
+
+  static const PdfColor _verde = PdfColor.fromInt(0xFF059669);
+  static const PdfColor _azul = PdfColor.fromInt(0xFF2563EB);
+  static const PdfColor _amarelo = PdfColor.fromInt(0xFFD97706);
+  static const PdfColor _vermelho = PdfColor.fromInt(0xFFDC2626);
+
   Future<void> gerarRelatorioOperacoes({
     required List<OperacaoExecutada> operacoes,
     required Map<String, int> resumo,
     required Map<String, dynamic> insights,
+    required List<Map<String, dynamic>> pivosProntosParaPlantio,
     required String filtroPivo,
     required String filtroOperacao,
     required DateTimeRange? filtroData,
@@ -17,417 +32,604 @@ class PdfService {
     required DateTime dataGeracao,
   }) async {
     final pdf = pw.Document();
-    final df = DateFormat('dd/MM/yyyy');
+    final totalOperacoes = resumo.values.fold(0, (a, b) => a + b);
 
-    // Ordenar operações
-    final ordenadas = <OperacaoExecutada>[];
-    ordenadas.addAll(operacoes.where((op) => op.status == 'concluida').toList());
-    ordenadas.addAll(operacoes.where((op) => op.status == 'atrasada').toList());
-    ordenadas.addAll(operacoes.where((op) => op.status == 'em_andamento').toList());
-    ordenadas.addAll(operacoes.where((op) => op.status == 'planejada').toList());
-    ordenadas.addAll(operacoes.where((op) => op.status == 'dispensada').toList());
-
-    // Página 1 - Resumo
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.a4,
-        margin: pw.EdgeInsets.all(30),
+        margin: const pw.EdgeInsets.all(28),
         build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
-            _titulo(),
-            pw.SizedBox(height: 15),
-            _informacoes(nomeUsuario, dataGeracao, filtroPivo, filtroOperacao, filtroData, ordenadas.length, df),
-            pw.SizedBox(height: 20),
-            _metricasOperacionais(insights),
-            pw.SizedBox(height: 20),
-            _resumoOperacoes(resumo, ordenadas.length),
+            _cabecalho(nomeUsuario, dataGeracao, filtroPivo, filtroOperacao, filtroData),
+            pw.SizedBox(height: 18),
+            _secaoResumo(resumo, totalOperacoes, pivosProntosParaPlantio.length),
+            pw.SizedBox(height: 16),
+            _secaoIndicadores(insights),
+            pw.SizedBox(height: 16),
+            _secaoPivosProntos(pivosProntosParaPlantio),
+            pw.Spacer(),
+            _rodape(),
           ],
         ),
       ),
     );
 
-    // Páginas seguintes - Lista completa de operações
-    const itemsPerPage = 20;
-    final totalPages = (ordenadas.length / itemsPerPage).ceil();
-    
-    for (var i = 0; i < ordenadas.length; i += itemsPerPage) {
-      final end = (i + itemsPerPage < ordenadas.length) ? i + itemsPerPage : ordenadas.length;
-      final pageOps = ordenadas.sublist(i, end);
-      final pageNum = (i ~/ itemsPerPage) + 1;
-      
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.all(30),
-          build: (context) => _listaOperacoes(pageOps, df, i + 1, end, ordenadas.length, pageNum, totalPages),
-        ),
-      );
-    }
-
-    // Gerar PDF e fazer download no navegador
+    // Gera o PDF e faz download no navegador
     final pdfBytes = await pdf.save();
-    
-    // Criar blob e download
+
     final blob = html.Blob([pdfBytes], 'application/pdf');
     final url = html.Url.createObjectUrlFromBlob(blob);
     final anchor = html.AnchorElement(href: url)
-      ..setAttribute('download', 'relatorio_operacoes_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf')
+      ..setAttribute(
+        'download',
+        'SIGA_Relatorio_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf',
+      )
       ..click();
     html.Url.revokeObjectUrl(url);
   }
 
-  pw.Widget _titulo() {
-    return pw.Column(
-      children: [
-        pw.Center(
-          child: pw.Text(
-            'SIGA APP',
-            style: pw.TextStyle(fontSize: 28, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
-          ),
-        ),
-        pw.SizedBox(height: 5),
-        pw.Center(
-          child: pw.Text(
-            'RELATORIO DE OPERACOES',
-            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
-          ),
-        ),
-        pw.SizedBox(height: 5),
-        pw.Center(
-          child: pw.Text(
-            'Sistema de Gestao Agricola',
-            style: pw.TextStyle(fontSize: 12, color: PdfColors.grey600),
-          ),
-        ),
-        pw.Divider(),
-      ],
-    );
-  }
+  // ============================================================
+  // CABEÇALHO
+  // ============================================================
+  pw.Widget _cabecalho(
+    String nomeUsuario,
+    DateTime dataGeracao,
+    String filtroPivo,
+    String filtroOperacao,
+    DateTimeRange? filtroData,
+  ) {
+    final filtrosAtivos = <String>[];
+    if (filtroPivo != 'Todos') filtrosAtivos.add('Pivô: $filtroPivo');
+    if (filtroOperacao != 'Todas') filtrosAtivos.add('Operação: $filtroOperacao');
+    if (filtroData != null) {
+      filtrosAtivos.add(
+        'Período: ${_fmt(filtroData.start)} – ${_fmt(filtroData.end)}',
+      );
+    }
+    final filtrosTexto = filtrosAtivos.isEmpty
+        ? 'Sem filtros aplicados'
+        : filtrosAtivos.join('   ·   ');
 
-  pw.Widget _informacoes(String nome, DateTime data, String pivo, String op, DateTimeRange? periodo, int total, DateFormat df) {
     return pw.Container(
-      width: double.infinity,
-      padding: pw.EdgeInsets.all(12),
+      padding: const pw.EdgeInsets.all(14),
       decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: PdfColors.grey300),
-        borderRadius: pw.BorderRadius.circular(8),
+        color: _grafite,
+        borderRadius: pw.BorderRadius.circular(6),
       ),
       child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.center,
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text('INFORMACOES DO RELATORIO', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-          pw.SizedBox(height: 8),
           pw.Row(
-            mainAxisAlignment: pw.MainAxisAlignment.center,
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
+              pw.Expanded(
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'SIGA',
+                      style: pw.TextStyle(
+                        fontSize: 20,
+                        fontWeight: pw.FontWeight.bold,
+                        color: _branco,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                    pw.SizedBox(height: 2),
+                    pw.Text(
+                      'Relatório Operacional',
+                      style: pw.TextStyle(
+                        fontSize: 10,
+                        color: _textoSuave,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.end,
                 children: [
-                  _linha('Data de emissao'),
-                  _linha('Gerado por'),
-                  _linha('Periodo analisado'),
-                  _linha('Filtro pivo'),
-                  _linha('Filtro operacao'),
-                  _linha('Total de operacoes'),
-                ],
-              ),
-              pw.SizedBox(width: 10),
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  _linhaValor('${df.format(data)} ${DateFormat('HH:mm').format(data)}'),
-                  _linhaValor(nome),
-                  _linhaValor(periodo != null ? '${df.format(periodo.start)} a ${df.format(periodo.end)}' : 'Todos os periodos'),
-                  _linhaValor(pivo == 'Todos' ? 'Todos os pivos' : pivo),
-                  _linhaValor(op == 'Todas' ? 'Todas as operacoes' : op),
-                  _linhaValor(total.toString()),
+                  pw.Text(
+                    'Gerado em ${_fmt(dataGeracao)} às ${_hora(dataGeracao)}',
+                    style: pw.TextStyle(fontSize: 8, color: _textoSuave),
+                  ),
+                  pw.SizedBox(height: 2),
+                  pw.Text(
+                    'por $nomeUsuario',
+                    style: pw.TextStyle(fontSize: 8, color: _textoSuave),
+                  ),
                 ],
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _linha(String label) {
-    return pw.Padding(
-      padding: pw.EdgeInsets.symmetric(vertical: 2),
-      child: pw.Text(label, style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-    );
-  }
-
-  pw.Widget _linhaValor(String valor) {
-    return pw.Padding(
-      padding: pw.EdgeInsets.symmetric(vertical: 2),
-      child: pw.Text(valor, style: pw.TextStyle(fontSize: 10, color: PdfColors.black)),
-    );
-  }
-
-  pw.Widget _metricasOperacionais(Map<String, dynamic> insights) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.center,
-      children: [
-        pw.Text('METRICAS OPERACIONAIS', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-        pw.SizedBox(height: 10),
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
-          children: [
-            _metricaCard('Total Realizado', '${(insights['totalRealizado'] ?? 0).toStringAsFixed(0)} ha'),
-            _metricaCard('Total a Executar', '${(insights['totalAExecutar'] ?? 0).toStringAsFixed(0)} ha'),
-            _metricaCard('Dias Necessarios', '${insights['diasAExecutar'] ?? 0} dias'),
-            _metricaCard('Rendimento Medio', '${(insights['rendimentoMedio'] ?? 0).toStringAsFixed(1)} ha/dia'),
-          ],
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _metricaCard(String titulo, String valor) {
-    return pw.Container(
-      width: 120,
-      padding: pw.EdgeInsets.all(10),
-      decoration: pw.BoxDecoration(
-        color: PdfColors.white,
-        borderRadius: pw.BorderRadius.circular(8),
-        border: pw.Border.all(color: PdfColors.grey300),
-      ),
-      child: pw.Column(
-        children: [
-          pw.Text(titulo, style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-          pw.SizedBox(height: 4),
-          pw.Text(valor, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _resumoOperacoes(Map<String, int> resumo, int total) {
-    final items = [
-      {'name': 'Concluidas', 'value': resumo['Concluído'] ?? 0, 'color': PdfColors.green},
-      {'name': 'Atrasadas', 'value': resumo['Atrasada'] ?? 0, 'color': PdfColors.red},
-      {'name': 'Em andamento', 'value': resumo['Em andamento'] ?? 0, 'color': PdfColors.blue},
-      {'name': 'Planejadas', 'value': resumo['Planejada'] ?? 0, 'color': PdfColors.orange},
-      {'name': 'Dispensadas', 'value': resumo['Dispensada'] ?? 0, 'color': PdfColors.grey},
-    ];
-
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.center,
-      children: [
-        pw.Text('RESUMO DAS OPERACOES', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-        pw.SizedBox(height: 10),
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
-          children: items.map((item) {
-            return _cardQuantidade(item['name'] as String, item['value'] as int);
-          }).toList(),
-        ),
-        pw.SizedBox(height: 16),
-        pw.Text('DISTRIBUICAO POR STATUS', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-        pw.SizedBox(height: 8),
-        pw.Container(
-          height: 25,
-          width: 400,
-          child: pw.Row(
-            mainAxisAlignment: pw.MainAxisAlignment.center,
-            children: items.map((item) {
-              final value = item['value'] as int;
-              final percent = total > 0 ? value / total : 0.0;
-              return pw.Expanded(
-                flex: (percent * 100).toInt(),
-                child: pw.Container(color: item['color'] as PdfColor),
-              );
-            }).toList(),
-          ),
-        ),
-        pw.SizedBox(height: 8),
-        pw.Wrap(
-          alignment: pw.WrapAlignment.center,
-          spacing: 15,
-          runSpacing: 5,
-          children: items.map((item) {
-            final value = item['value'] as int;
-            if (value == 0) return pw.SizedBox.shrink();
-            final percent = total > 0 ? (value / total * 100).toStringAsFixed(1) : '0';
-            return pw.Row(
-              mainAxisSize: pw.MainAxisSize.min,
+          pw.SizedBox(height: 10),
+          pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: pw.BoxDecoration(
+              color: _grafiteClaro,
+              borderRadius: pw.BorderRadius.circular(3),
+            ),
+            child: pw.Row(
               children: [
-                pw.Container(width: 12, height: 12, color: item['color'] as PdfColor),
-                pw.SizedBox(width: 6),
-                pw.Text('${item['name']}: $value ($percent%)', style: pw.TextStyle(fontSize: 9, color: PdfColors.black)),
-              ],
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _cardQuantidade(String titulo, int valor) {
-    PdfColor corFundo;
-    if (titulo == 'Concluidas') corFundo = PdfColors.green;
-    else if (titulo == 'Atrasadas') corFundo = PdfColors.red;
-    else if (titulo == 'Em andamento') corFundo = PdfColors.blue;
-    else if (titulo == 'Planejadas') corFundo = PdfColors.orange;
-    else corFundo = PdfColors.grey;
-    
-    return pw.Container(
-      width: 100,
-      padding: pw.EdgeInsets.all(10),
-      decoration: pw.BoxDecoration(
-        color: PdfColors.white,
-        borderRadius: pw.BorderRadius.circular(8),
-        border: pw.Border.all(color: PdfColor(corFundo.red, corFundo.green, corFundo.blue, 0.5)),
-      ),
-      child: pw.Column(
-        children: [
-          pw.Text(titulo, style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-          pw.SizedBox(height: 4),
-          pw.Text(valor.toString(), style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.black)),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _listaOperacoes(List<OperacaoExecutada> ops, DateFormat df, int inicio, int fim, int total, int pagina, int totalPaginas) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.center,
-      children: [
-        pw.Center(
-          child: pw.Text(
-            'DETALHAMENTO DAS OPERACOES',
-            style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.blue),
-          ),
-        ),
-        pw.SizedBox(height: 5),
-        pw.Divider(),
-        pw.SizedBox(height: 8),
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-          children: [
-            pw.Text('Mostrando operacoes $inicio a $fim de $total', style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600)),
-            pw.Text('Pagina $pagina de $totalPaginas', style: pw.TextStyle(fontSize: 9, color: PdfColors.grey600)),
-          ],
-        ),
-        pw.SizedBox(height: 12),
-        
-        pw.Table(
-          border: pw.TableBorder.all(color: PdfColors.grey300),
-          columnWidths: {
-            0: pw.FlexColumnWidth(2.2),
-            1: pw.FlexColumnWidth(1.3),
-            2: pw.FlexColumnWidth(0.9),
-            3: pw.FlexColumnWidth(0.8),
-            4: pw.FlexColumnWidth(1.8),
-            5: pw.FlexColumnWidth(0.9),
-            6: pw.FlexColumnWidth(0.7),
-          },
-          children: [
-            pw.TableRow(
-              decoration: pw.BoxDecoration(color: PdfColors.grey100),
-              children: [
-                _thCenter('Operacao'),
-                _thCenter('Pivo'),
-                _thCenter('Status'),
-                _thCenter('Area (ha)'),
-                _thCenter('Janela de Execucao'),
-                _thCenter('Rendimento'),
-                _thCenter('Dias'),
+                pw.Text(
+                  'FILTROS  ',
+                  style: pw.TextStyle(
+                    fontSize: 7,
+                    fontWeight: pw.FontWeight.bold,
+                    color: _textoSuave,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                pw.Expanded(
+                  child: pw.Text(
+                    filtrosTexto,
+                    style: pw.TextStyle(fontSize: 8, color: _branco),
+                  ),
+                ),
               ],
             ),
-            ...ops.map((op) => pw.TableRow(
-              children: [
-                _tdCenter(_removerAcentos(op.operacaoNome ?? '-')),
-                _tdCenter(_removerAcentos(op.pivoNome ?? '-')),
-                _buildStatusCellPadrao(op, df),
-                _tdCenter(op.areaTotal?.toStringAsFixed(0) ?? '-'),
-                _tdCenter('${df.format(op.getDataInicioJanelaCalculada())} a ${df.format(op.getDataFimJanelaCalculada())}'),
-                _tdCenter('${op.rendimentoHaDia?.toStringAsFixed(1) ?? 0} ha/dia'),
-                _tdCenter(op.getDiasNecessarios().toString()),
-              ],
-            )),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // RESUMO GERAL
+  // ============================================================
+  pw.Widget _secaoResumo(
+    Map<String, int> resumo,
+    int total,
+    int prontos,
+  ) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        _tituloSecao('Resumo Geral'),
+        pw.SizedBox(height: 10),
+        pw.Row(
+          children: [
+            _cardStatus('Concluído', resumo['Concluído'] ?? 0, _verde),
+            pw.SizedBox(width: 6),
+            _cardStatus('Em andamento', resumo['Em andamento'] ?? 0, _azul),
+            pw.SizedBox(width: 6),
+            _cardStatus('Planejada', resumo['Planejada'] ?? 0, _amarelo),
+            pw.SizedBox(width: 6),
+            _cardStatus('Atrasada', resumo['Atrasada'] ?? 0, _vermelho),
+            pw.SizedBox(width: 6),
+            _cardStatus('Dispensada', resumo['Dispensada'] ?? 0, _cinza),
           ],
         ),
-        
-        pw.SizedBox(height: 15),
-        pw.Center(
-          child: pw.Text(
-            'Relatorio gerado automaticamente pelo SIGA App',
-            style: pw.TextStyle(fontSize: 8, color: PdfColors.grey500, fontStyle: pw.FontStyle.italic),
+        pw.SizedBox(height: 8),
+        pw.Row(
+          children: [
+            pw.Expanded(
+              child: pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: pw.BoxDecoration(
+                  color: _cinzaClaro,
+                  borderRadius: pw.BorderRadius.circular(4),
+                  border: pw.Border.all(color: _borda, width: 0.5),
+                ),
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text(
+                      'Total de operações',
+                      style: pw.TextStyle(
+                        fontSize: 9,
+                        color: _grafiteClaro,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.Text(
+                      '$total',
+                      style: pw.TextStyle(
+                        fontSize: 13,
+                        color: _grafite,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            pw.SizedBox(width: 6),
+            pw.Expanded(
+              child: pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: pw.BoxDecoration(
+                  color: _verde,
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text(
+                      'Pivôs prontos para plantio',
+                      style: pw.TextStyle(
+                        fontSize: 9,
+                        color: _branco,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.Text(
+                      '$prontos',
+                      style: pw.TextStyle(
+                        fontSize: 13,
+                        color: _branco,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _cardStatus(String label, int valor, PdfColor cor) {
+    return pw.Expanded(
+      child: pw.Container(
+        padding: const pw.EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+        decoration: pw.BoxDecoration(
+          color: _branco,
+          borderRadius: pw.BorderRadius.circular(4),
+          border: pw.Border.all(color: _borda, width: 0.5),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            pw.Container(
+              width: 5,
+              height: 5,
+              decoration: pw.BoxDecoration(color: cor, shape: pw.BoxShape.circle),
+            ),
+            pw.SizedBox(height: 5),
+            pw.Text(
+              '$valor',
+              style: pw.TextStyle(
+                fontSize: 14,
+                fontWeight: pw.FontWeight.bold,
+                color: _grafite,
+              ),
+            ),
+            pw.SizedBox(height: 2),
+            pw.Text(
+              label,
+              textAlign: pw.TextAlign.center,
+              style: pw.TextStyle(fontSize: 7, color: _cinza),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // INDICADORES
+  // ============================================================
+  pw.Widget _secaoIndicadores(Map<String, dynamic> insights) {
+    final totalRealizado =
+        (insights['totalRealizado'] as num?)?.toDouble() ?? 0;
+    final totalAExecutar =
+        (insights['totalAExecutar'] as num?)?.toDouble() ?? 0;
+    final dias = insights['diasAExecutar'] as int? ?? 0;
+    final capacidade = (insights['capacidadeTotal'] as num?)?.toDouble() ?? 0;
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        _tituloSecao('Indicadores'),
+        pw.SizedBox(height: 10),
+        pw.Row(
+          children: [
+            _indicador('Realizado', '${totalRealizado.toStringAsFixed(0)} ha', _verde),
+            pw.SizedBox(width: 6),
+            _indicador('A executar', '${totalAExecutar.toStringAsFixed(0)} ha', _amarelo),
+            pw.SizedBox(width: 6),
+            _indicador('Tempo necessário', '$dias dias', _azul),
+            pw.SizedBox(width: 6),
+            _indicador(
+              'Capacidade',
+              '${capacidade.toStringAsFixed(1)} ha/dia',
+              _grafiteClaro,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _indicador(String label, String valor, PdfColor cor) {
+    return pw.Expanded(
+      child: pw.Container(
+        padding: const pw.EdgeInsets.all(10),
+        decoration: pw.BoxDecoration(
+          color: _branco,
+          borderRadius: pw.BorderRadius.circular(4),
+          border: pw.Border.all(color: _borda, width: 0.5),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Container(
+              width: 18,
+              height: 3,
+              decoration: pw.BoxDecoration(
+                color: cor,
+                borderRadius: pw.BorderRadius.circular(2),
+              ),
+            ),
+            pw.SizedBox(height: 7),
+            pw.Text(
+              valor,
+              style: pw.TextStyle(
+                fontSize: 12,
+                fontWeight: pw.FontWeight.bold,
+                color: _grafite,
+              ),
+            ),
+            pw.SizedBox(height: 2),
+            pw.Text(
+              label,
+              style: pw.TextStyle(fontSize: 7, color: _cinza),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // PIVÔS PRONTOS PARA PLANTIO
+  // ============================================================
+  pw.Widget _secaoPivosProntos(List<Map<String, dynamic>> prontos) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        _tituloSecao('Pivôs prontos para plantio'),
+        pw.SizedBox(height: 10),
+        pw.Container(
+          decoration: pw.BoxDecoration(
+            border: pw.Border.all(color: _borda, width: 0.5),
+            borderRadius: pw.BorderRadius.circular(4),
+          ),
+          child: pw.Column(
+            children: [
+              pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: pw.BoxDecoration(
+                  color: _grafite,
+                  borderRadius: const pw.BorderRadius.only(
+                    topLeft: pw.Radius.circular(4),
+                    topRight: pw.Radius.circular(4),
+                  ),
+                ),
+                child: pw.Row(
+                  children: [
+                    pw.Expanded(
+                      flex: 3,
+                      child: pw.Text(
+                        'PIVÔ',
+                        style: pw.TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: _branco,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                    pw.Expanded(
+                      flex: 3,
+                      child: pw.Text(
+                        'ÚLTIMA OPERAÇÃO',
+                        style: pw.TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: _branco,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(
+                        'CONCLUÍDAS',
+                        textAlign: pw.TextAlign.right,
+                        style: pw.TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: _branco,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                    pw.Expanded(
+                      flex: 2,
+                      child: pw.Text(
+                        'PLANTIO',
+                        textAlign: pw.TextAlign.right,
+                        style: pw.TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: _branco,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (prontos.isEmpty)
+                pw.Container(
+                  padding: const pw.EdgeInsets.all(18),
+                  child: pw.Center(
+                    child: pw.Text(
+                      'Nenhum pivô pronto para plantio no momento.',
+                      style: pw.TextStyle(
+                        fontSize: 9,
+                        color: _cinza,
+                        fontStyle: pw.FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                )
+              else
+                ...prontos.map((p) {
+                  final plantio = p['plantio'] as DateTime?;
+                  final concluidas = p['concluidas'] as int? ?? 0;
+                  final operacoes = p['operacoes'] as int? ?? 0;
+                  final anterior = p['anterior'] as String?;
+
+                  return pw.Container(
+                    padding: const pw.EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: pw.BoxDecoration(
+                      border: pw.Border(
+                        top: pw.BorderSide(color: _borda, width: 0.5),
+                      ),
+                    ),
+                    child: pw.Row(
+                      children: [
+                        pw.Expanded(
+                          flex: 3,
+                          child: pw.Row(
+                            children: [
+                              pw.Container(
+                                width: 6,
+                                height: 6,
+                                decoration: pw.BoxDecoration(
+                                  color: _verde,
+                                  shape: pw.BoxShape.circle,
+                                ),
+                              ),
+                              pw.SizedBox(width: 6),
+                              pw.Text(
+                                p['nome'] as String? ?? '—',
+                                style: pw.TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: pw.FontWeight.bold,
+                                  color: _grafite,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        pw.Expanded(
+                          flex: 3,
+                          child: pw.Text(
+                            anterior ?? '—',
+                            style: pw.TextStyle(
+                              fontSize: 8,
+                              color: _grafiteClaro,
+                            ),
+                          ),
+                        ),
+                        pw.Expanded(
+                          flex: 2,
+                          child: pw.Text(
+                            '$concluidas/$operacoes',
+                            textAlign: pw.TextAlign.right,
+                            style: pw.TextStyle(
+                              fontSize: 8,
+                              color: _grafiteClaro,
+                            ),
+                          ),
+                        ),
+                        pw.Expanded(
+                          flex: 2,
+                          child: pw.Text(
+                            plantio != null ? _fmt(plantio) : '—',
+                            textAlign: pw.TextAlign.right,
+                            style: pw.TextStyle(
+                              fontSize: 8,
+                              fontWeight: pw.FontWeight.bold,
+                              color: _grafite,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+            ],
           ),
         ),
       ],
     );
   }
 
-  pw.Widget _thCenter(String text) {
+  // ============================================================
+  // HELPERS
+  // ============================================================
+  pw.Widget _tituloSecao(String titulo) {
+    return pw.Row(
+      children: [
+        pw.Container(
+          width: 3,
+          height: 13,
+          decoration: pw.BoxDecoration(
+            color: _grafite,
+            borderRadius: pw.BorderRadius.circular(2),
+          ),
+        ),
+        pw.SizedBox(width: 8),
+        pw.Text(
+          titulo.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: 8.5,
+            fontWeight: pw.FontWeight.bold,
+            color: _grafite,
+            letterSpacing: 1.1,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _rodape() {
     return pw.Container(
-      alignment: pw.Alignment.center,
-      padding: pw.EdgeInsets.all(6),
-      child: pw.Text(
-        text,
-        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
-        textAlign: pw.TextAlign.center,
+      padding: const pw.EdgeInsets.only(top: 10),
+      decoration: pw.BoxDecoration(
+        border: pw.Border(
+          top: pw.BorderSide(color: _borda, width: 0.5),
+        ),
+      ),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        children: [
+          pw.Text(
+            'SIGA · Sistema de Gestão Agrícola',
+            style: pw.TextStyle(fontSize: 7, color: _cinza),
+          ),
+          pw.Text(
+            'Documento gerado automaticamente',
+            style: pw.TextStyle(
+              fontSize: 7,
+              color: _cinza,
+              fontStyle: pw.FontStyle.italic,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  pw.Widget _tdCenter(String text) {
-    return pw.Container(
-      alignment: pw.Alignment.center,
-      padding: pw.EdgeInsets.all(5),
-      child: pw.Text(text, style: pw.TextStyle(fontSize: 8), textAlign: pw.TextAlign.center),
-    );
+  String _fmt(DateTime d) {
+    return '${d.day.toString().padLeft(2, '0')}/'
+        '${d.month.toString().padLeft(2, '0')}/${d.year}';
   }
 
-  pw.Widget _buildStatusCellPadrao(OperacaoExecutada op, DateFormat df) {
-    String statusText = op.getStatusText();
-    String status = op.status;
-    
-    final isAtrasadaReal = op.isRealmenteAtrasada;
-    
-    PdfColor cor;
-    if (status == 'concluida') cor = PdfColors.green;
-    else if (status == 'em_andamento') cor = PdfColors.blue;
-    else if (status == 'atrasada') cor = PdfColors.red;
-    else if (status == 'dispensada') cor = PdfColors.grey;
-    else cor = PdfColors.orange;
-    
-    if (isAtrasadaReal && status != 'atrasada' && status != 'concluida' && status != 'dispensada') {
-      cor = PdfColors.red;
-      statusText = '$statusText (Atrasada)';
-    }
-    
-    return pw.Container(
-      alignment: pw.Alignment.center,
-      child: pw.Container(
-        width: 75,
-        height: 22,
-        alignment: pw.Alignment.center,
-        decoration: pw.BoxDecoration(
-          color: PdfColor(cor.red, cor.green, cor.blue, 0.15),
-          borderRadius: pw.BorderRadius.circular(4),
-        ),
-        child: pw.Text(
-          statusText,
-          style: pw.TextStyle(fontSize: 8, color: cor, fontWeight: pw.FontWeight.bold),
-          textAlign: pw.TextAlign.center,
-        ),
-      ),
-    );
-  }
-
-  String _removerAcentos(String texto) {
-    if (texto == 'Todos') return 'Todos';
-    if (texto == 'Todas') return 'Todas';
-    
-    final comAcentos = 'áàãâäéèêëíìîïóòõôöúùûüçÁÀÃÂÄÉÈÊËÍÌÎÏÓÒÕÔÖÚÙÛÜÇ';
-    final semAcentos = 'aaaaaeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUC';
-    
-    for (int i = 0; i < comAcentos.length; i++) {
-      texto = texto.replaceAll(comAcentos[i], semAcentos[i]);
-    }
-    return texto;
+  String _hora(DateTime d) {
+    return '${d.hour.toString().padLeft(2, '0')}:'
+        '${d.minute.toString().padLeft(2, '0')}';
   }
 }

@@ -53,6 +53,15 @@ class _PainelScreenState extends State<PainelScreen> {
     'Dispensada': Colors.grey,
   };
 
+  static const Color _neutroFundo = Color(0xFFF8F9FA);
+  static const Color _neutroBorda = Color(0xFFE5E7EB);
+  static const Color _neutroTexto = Color(0xFF374151);
+  static const Color _neutroTextoSuave = Color(0xFF6B7280);
+  static const Color _neutroIcone = Color(0xFF9CA3AF);
+  static const Color _destaque = Color(0xFF2563EB);
+  static const Color _destaqueFundo = Color(0xFFEFF6FF);
+  static const Color _destaqueBorda = Color(0xFFBFDBFE);
+
   void _invalidarCaches() {
     _operacoesFiltradasCache = null;
     _resumoCache = null;
@@ -83,7 +92,32 @@ class _PainelScreenState extends State<PainelScreen> {
 
   bool get _temFiltroData => _dataInicio != null || _dataFim != null;
 
+  bool get _temFiltroAtivo =>
+      _filtroPivo != 'Todos' || _filtroOperacao != 'Todas' || _temFiltroData;
+
   List<OperacaoExecutada> _calcularOperacoesFiltradas() {
+    // Filtro de data agora é por PLANTIO DO PIVÔ.
+    // Uma operação entra no conjunto se:
+    //  - passa nos filtros de pivô/operação, E
+    //  - o plantio da safra dela cai dentro do período (se houver filtro de data).
+    //
+    // Se o plantio do pivô está no período, TODAS as operações desse pivô
+    // entram — porque o pivô é "do período" e o contexto dele é completo.
+
+    final Set<String> pivosNoPlantioPeriodo = {};
+
+    if (_temFiltroData) {
+      for (final op in widget.service.operacoes) {
+        final plantio = op.dataPlantio;
+        if (plantio == null) continue;
+
+        if (_dataInicio != null && plantio.isBefore(_dataInicio!)) continue;
+        if (_dataFim != null && plantio.isAfter(_dataFim!)) continue;
+
+        pivosNoPlantioPeriodo.add(op.pivoNome ?? 'Sem pivô');
+      }
+    }
+
     var operacoes = widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
       if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) {
@@ -91,20 +125,10 @@ class _PainelScreenState extends State<PainelScreen> {
       }
 
       if (_temFiltroData) {
-        final inicio = _dataInicio;
-        final fim = _dataFim;
-
-        DateTime? dataReferencia;
-        if (op.status == 'concluida' && op.dataFimUltima != null) {
-          dataReferencia = op.dataFimUltima;
-        } else {
-          dataReferencia = op.getDataInicioJanelaCalculada();
-        }
-
-        if (dataReferencia == null) return false;
-        if (inicio != null && dataReferencia.isBefore(inicio)) return false;
-        if (fim != null && dataReferencia.isAfter(fim)) return false;
+        final nomePivo = op.pivoNome ?? 'Sem pivô';
+        if (!pivosNoPlantioPeriodo.contains(nomePivo)) return false;
       }
+
       return true;
     }).toList();
 
@@ -171,7 +195,6 @@ class _PainelScreenState extends State<PainelScreen> {
       }
     }
 
-    // Rendimento único por operação padrão (para o card de capacidade)
     final Map<String, double> rendimentoPorOperacao = {};
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada' || op.status == 'concluida') continue;
@@ -191,10 +214,6 @@ class _PainelScreenState extends State<PainelScreen> {
           rendimentoPorOperacao.values.fold<double>(0, (a, b) => a + b);
     }
 
-    // ============================================================
-    // SIMULAÇÃO COM JANELAS
-    // ============================================================
-    // Agrupa operações pendentes por pivô.
     final Map<String, List<OperacaoExecutada>> opsPorPivo = {};
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada' || op.status == 'concluida') continue;
@@ -209,15 +228,12 @@ class _PainelScreenState extends State<PainelScreen> {
     for (var entry in opsPorPivo.entries) {
       final ops = entry.value;
 
-      // Ordena por dias_antes_plantio (mais negativo primeiro = mais distante
-      // do plantio roda antes).
       ops.sort((a, b) =>
           (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
 
       if (ops.isEmpty) continue;
       pivosEmParalelo++;
 
-      // Bloqueio inicial: operações em andamento ocupam o pivô até terminarem.
       DateTime? livreEm;
       for (var op in ops) {
         if (op.status != 'em_andamento') continue;
@@ -226,14 +242,13 @@ class _PainelScreenState extends State<PainelScreen> {
         if (rendimento <= 0) continue;
         final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
         final duracao = area / rendimento;
-        final fimPrevisto = op.dataInicioPrimeira!
-            .add(Duration(days: duracao.ceil()));
+        final fimPrevisto =
+            op.dataInicioPrimeira!.add(Duration(days: duracao.ceil()));
         if (livreEm == null || fimPrevisto.isAfter(livreEm)) {
           livreEm = fimPrevisto;
         }
       }
 
-      // Simula cada operação na ordem.
       for (var op in ops) {
         final rendimento = op.rendimentoHaDia ?? 0;
         if (rendimento <= 0) continue;
@@ -241,10 +256,9 @@ class _PainelScreenState extends State<PainelScreen> {
         final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
         final duracaoDias = (area / rendimento).ceil();
 
-        // Se está em andamento, já começou. Usa o fim previsto direto.
         if (op.status == 'em_andamento' && op.dataInicioPrimeira != null) {
-          final fim = op.dataInicioPrimeira!
-              .add(Duration(days: duracaoDias));
+          final fim =
+              op.dataInicioPrimeira!.add(Duration(days: duracaoDias));
           if (dataFimMaisTardia == null || fim.isAfter(dataFimMaisTardia)) {
             dataFimMaisTardia = fim;
           }
@@ -253,13 +267,16 @@ class _PainelScreenState extends State<PainelScreen> {
 
         final inicioJanela = op.getDataInicioJanelaCalculada();
 
-        // Início real: o mais tarde entre "pivô livre" e "janela aberta".
         DateTime inicioReal;
         if (livreEm == null) {
           inicioReal = inicioJanela;
         } else {
           inicioReal =
               livreEm.isAfter(inicioJanela) ? livreEm : inicioJanela;
+        }
+
+        if (inicioReal.isBefore(hoje)) {
+          inicioReal = hoje;
         }
 
         final fimReal = inicioReal.add(Duration(days: duracaoDias));
@@ -290,20 +307,35 @@ class _PainelScreenState extends State<PainelScreen> {
   Map<String, dynamic> get _progressoPivos {
     if (_progressoPivosCache != null) return _progressoPivosCache!;
 
-    final Map<String, dynamic> resultado = {};
+    // PASSO 1 — prontoParaPlantio por pivô (IGNORA filtros).
+    final Map<String, bool> prontoPorPivo = {};
 
-    Set<String> pivosNoPeriodo = {};
-
+    final Map<String, List<OperacaoExecutada>> todasPorPivo = {};
     for (final op in widget.service.operacoes) {
-      if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) continue;
+      final pivo = op.pivoNome ?? 'Sem pivô';
+      todasPorPivo.putIfAbsent(pivo, () => []).add(op);
+    }
 
-      if (_temFiltroData) {
-        final plantio = op.dataPlantio;
-        if (plantio == null) continue;
-        if (_dataInicio != null && plantio.isBefore(_dataInicio!)) continue;
-        if (_dataFim != null && plantio.isAfter(_dataFim!)) continue;
+    todasPorPivo.forEach((pivo, ops) {
+      if (ops.isEmpty) {
+        prontoPorPivo[pivo] = false;
+        return;
       }
+      final todasFinalizadas = ops.every(
+        (op) => op.status == 'concluida' || op.status == 'dispensada',
+      );
+      final temAndamento = ops.any((op) => op.status == 'em_andamento');
+      prontoPorPivo[pivo] = todasFinalizadas && !temAndamento;
+    });
 
+    // PASSO 2 — lista exibida.
+    // Pivôs que entram: os que têm pelo menos uma operação em _operacoesFiltradas.
+    // Como o filtro de data é por plantio, uma vez que o pivô entra,
+    // mostramos TODAS as operações dele (via operacoesPivoCompleto).
+    final Map<String, dynamic> resultado = {};
+    final Set<String> pivosNoPeriodo = {};
+
+    for (final op in _operacoesFiltradas) {
       final nomePivo = op.pivoNome ?? 'Sem pivô';
       pivosNoPeriodo.add(nomePivo);
     }
@@ -326,15 +358,21 @@ class _PainelScreenState extends State<PainelScreen> {
         'dispensadas': 0,
       };
 
-      final operacoesPivo = widget.service.operacoes.where((op) {
-        if (op.pivoNome != pivoNome) return false;
+      // Contexto completo do pivô (sem filtro de operação nem data).
+      final operacoesPivoCompleto = widget.service.operacoes
+          .where((op) => op.pivoNome == pivoNome)
+          .toList();
+
+      // Se o filtro de operação está ativo, mostramos apenas as operações
+      // que batem com o nome filtrado.
+      final operacoesPivo = operacoesPivoCompleto.where((op) {
         if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) {
           return false;
         }
         return true;
       }).toList();
 
-      for (final op in operacoesPivo) {
+      for (final op in operacoesPivoCompleto) {
         if (op.dataPlantio != null) {
           resultado[pivoNome]['plantio'] = op.dataPlantio;
           break;
@@ -344,8 +382,11 @@ class _PainelScreenState extends State<PainelScreen> {
       for (final op in operacoesPivo) {
         final dias = op.getDiasNecessarios().toDouble();
         final item = resultado[pivoNome];
-        item['diasTotal'] += dias;
         item['operacoes']++;
+
+        if (op.status != 'concluida' && op.status != 'dispensada') {
+          item['diasTotal'] += dias;
+        }
 
         switch (op.status) {
           case 'dispensada':
@@ -393,53 +434,40 @@ class _PainelScreenState extends State<PainelScreen> {
       item['percentualPlanejado'] = percentualPlanejado;
       item['percentualExecutado'] = percentualConcluido + percentualAndamento;
 
-      // ============================================================
-      // AVISO DE ESTADO DO PIVÔ
-      // ============================================================
-      // Ordena todas as operações do pivô (incluindo concluídas/dispensadas)
-      // por dias_antes_plantio, para descobrir a "próxima da fila".
-      final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivo)
+      // ANTERIOR / PRÓXIMA — usa o conjunto completo do pivô.
+      final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivoCompleto)
         ..sort((a, b) =>
             (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
 
-      String? aviso;
-      bool avisoConcluido = false;
+      bool concluida(OperacaoExecutada op) => op.status == 'concluida';
+      bool dispensada(OperacaoExecutada op) => op.status == 'dispensada';
+      bool pendente(OperacaoExecutada op) =>
+          !concluida(op) && !dispensada(op);
 
-      // Todas concluídas/dispensadas?
-      final todasFinalizadas = opsOrdenadas.every(
-        (op) => op.status == 'concluida' || op.status == 'dispensada',
-      );
-
-      if (todasFinalizadas && opsOrdenadas.isNotEmpty) {
-        aviso = '✅ Concluído';
-        avisoConcluido = true;
-      } else {
-        // Encontra a próxima operação pendente.
-        final proxima = opsOrdenadas.firstWhere(
-          (op) => op.status != 'concluida' && op.status != 'dispensada',
-          orElse: () => opsOrdenadas.last,
-        );
-
-        // Índice da próxima na fila
-        final idxProxima = opsOrdenadas.indexOf(proxima);
-
-        // Verifica se a imediatamente anterior já está concluída/dispensada.
-        final anteriorOk = idxProxima == 0 ||
-            opsOrdenadas[idxProxima - 1].status == 'concluida' ||
-            opsOrdenadas[idxProxima - 1].status == 'dispensada';
-
-        // Só mostra "Pronto" se a anterior já foi finalizada
-        // e não há operação em andamento bloqueando.
-        final temAndamento = opsOrdenadas
-            .any((op) => op.status == 'em_andamento');
-
-        if (anteriorOk && !temAndamento) {
-          aviso = '🟢 Pronto para receber ${proxima.operacaoNome ?? "operação"}';
+      OperacaoExecutada? anterior;
+      for (int i = opsOrdenadas.length - 1; i >= 0; i--) {
+        if (concluida(opsOrdenadas[i])) {
+          anterior = opsOrdenadas[i];
+          break;
         }
       }
 
-      item['aviso'] = aviso;
-      item['avisoConcluido'] = avisoConcluido;
+      int idxUltimaConcluida = -1;
+      for (int i = 0; i < opsOrdenadas.length; i++) {
+        if (concluida(opsOrdenadas[i])) idxUltimaConcluida = i;
+      }
+
+      OperacaoExecutada? proxima;
+      for (int i = idxUltimaConcluida + 1; i < opsOrdenadas.length; i++) {
+        if (pendente(opsOrdenadas[i])) {
+          proxima = opsOrdenadas[i];
+          break;
+        }
+      }
+
+      item['anterior'] = anterior?.operacaoNome;
+      item['proxima'] = proxima?.operacaoNome;
+      item['prontoParaPlantio'] = prontoPorPivo[pivoNome] ?? false;
     }
 
     final lista = resultado.values.toList();
@@ -456,6 +484,31 @@ class _PainelScreenState extends State<PainelScreen> {
     return _progressoPivosCache!;
   }
 
+  List<Map<String, dynamic>> get _pivosProntosParaPlantio {
+    final lista = _progressoPivos['lista'] as List;
+    final prontos = <Map<String, dynamic>>[];
+    for (var item in lista) {
+      if (item['prontoParaPlantio'] == true) {
+        prontos.add({
+          'nome': item['nome'],
+          'plantio': item['plantio'],
+          'concluidas': item['concluidas'],
+          'operacoes': item['operacoes'],
+          'anterior': item['anterior'],
+        });
+      }
+    }
+    prontos.sort((a, b) {
+      final da = a['plantio'] as DateTime?;
+      final db = b['plantio'] as DateTime?;
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return da.compareTo(db);
+    });
+    return prontos;
+  }
+
   String _formatarDataComAno(DateTime? data) {
     if (data == null) return '---';
     try {
@@ -463,6 +516,11 @@ class _PainelScreenState extends State<PainelScreen> {
     } catch (e) {
       return 'Data inválida';
     }
+  }
+
+  String _formatarDataCurta(DateTime data) {
+    return '${data.day.toString().padLeft(2, '0')}/'
+        '${data.month.toString().padLeft(2, '0')}';
   }
 
   Future<void> _carregarDados() async {
@@ -506,71 +564,136 @@ class _PainelScreenState extends State<PainelScreen> {
       return;
     }
 
-    final confirmar = await showDialog<bool>(
+    operacoesParaCorrigir.sort((a, b) {
+      final da = a.getDataFimJanelaCalculada();
+      final db = b.getDataFimJanelaCalculada();
+      return da.compareTo(db);
+    });
+
+    await showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Operações Atrasadas Detectadas'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Text(
-              'Encontradas ${operacoesParaCorrigir.length} operações que estão fora da janela:',
+            Icon(
+              Icons.warning_amber_outlined,
+              color: _cores['Atrasada'],
+              size: 22,
             ),
-            const SizedBox(height: 12),
-            ...operacoesParaCorrigir.map(
-              (op) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning, color: Colors.orange, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${op.operacaoNome} - ${op.pivoNome}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'Operações Atrasadas',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: _neutroTexto,
                 ),
               ),
             ),
-            const SizedBox(height: 16),
-            const Text('Deseja marcar todas como ATRASADAS?'),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: _cores['Atrasada']!.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '${operacoesParaCorrigir.length}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _cores['Atrasada'],
+                ),
+              ),
+            ),
           ],
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(0, 16, 0, 0),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            itemCount: operacoesParaCorrigir.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final op = operacoesParaCorrigir[index];
+              final fim = op.getDataFimJanelaCalculada();
+              final diasAtraso = DateTime.now().difference(fim).inDays;
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 3,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: _cores['Atrasada'],
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            op.operacaoNome ?? 'Operação',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: _neutroTexto,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            op.pivoNome ?? 'Sem pivô',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: _neutroTextoSuave,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '$diasAtraso d',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _cores['Atrasada'],
+                          ),
+                        ),
+                        Text(
+                          'Limite: ${_formatarDataComAno(fim)}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: _neutroTextoSuave,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Marcar Todas'),
+            onPressed: () => Navigator.pop(context),
+            style: TextButton.styleFrom(
+              foregroundColor: _neutroTextoSuave,
+            ),
+            child: const Text('Fechar'),
           ),
         ],
       ),
     );
-
-    if (confirmar == true) {
-      setState(() => _isLoading = true);
-
-      for (var op in operacoesParaCorrigir) {
-        await widget.service.atualizarStatus(op, 'atrasada');
-      }
-
-      _invalidarCaches();
-      setState(() => _isLoading = false);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '✅ ${operacoesParaCorrigir.length} operações marcadas como atrasadas',
-          ),
-        ),
-      );
-    }
   }
 
   Future<void> _gerarRelatorioPDF() async {
@@ -596,6 +719,7 @@ class _PainelScreenState extends State<PainelScreen> {
         operacoes: _operacoesFiltradas,
         resumo: _resumo,
         insights: _insights,
+        pivosProntosParaPlantio: _pivosProntosParaPlantio,
         filtroPivo: _filtroPivo,
         filtroOperacao: _filtroOperacao,
         filtroData: (_dataInicio != null && _dataFim != null)
@@ -658,40 +782,91 @@ class _PainelScreenState extends State<PainelScreen> {
             child: Column(
               children: [
                 _buildFiltros(pivos, operacoesLista),
-                const SizedBox(height: 25),
+                const SizedBox(height: 16),
+                _buildCardProntosParaPlantio(),
+                const SizedBox(height: 12),
                 _buildCards(resumo),
-                const SizedBox(height: 25),
+                const SizedBox(height: 20),
                 _buildSecaoRecolhivel(
                   chave: 'grafico',
                   titulo: 'Distribuição por Status',
-                  icone: Icons.pie_chart,
-                  cor: Colors.blue,
+                  icone: Icons.pie_chart_outline,
+                  cor: _neutroTexto,
                   child: _buildGrafico(resumo, total),
                 ),
-                const SizedBox(height: 25),
+                const SizedBox(height: 16),
                 _buildSecaoRecolhivel(
                   chave: 'insights',
                   titulo: 'Insights Operacionais',
-                  icone: Icons.insights,
-                  cor: Colors.blue[700]!,
+                  icone: Icons.insights_outlined,
+                  cor: _neutroTexto,
                   child: _buildInsights(insights),
                 ),
-                const SizedBox(height: 25),
+                const SizedBox(height: 16),
                 _buildResumoPlantios(),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 _buildSecaoOperacoes('Concluído', _cores['Concluído']!),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 _buildSecaoOperacoes('Em andamento', _cores['Em andamento']!),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 _buildSecaoOperacoes('Planejada', _cores['Planejada']!),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 _buildSecaoOperacoes('Atrasada', _cores['Atrasada']!),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 _buildSecaoOperacoes('Dispensada', _cores['Dispensada']!),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCardProntosParaPlantio() {
+    final prontos = _pivosProntosParaPlantio;
+    final totalProntos = prontos.length;
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _neutroBorda),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: _cores['Concluído'],
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              '$totalProntos',
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: _neutroTexto,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              totalProntos == 1
+                  ? 'pivô pronto para plantio'
+                  : 'pivôs prontos para plantio',
+              style: const TextStyle(
+                fontSize: 12,
+                color: _neutroTextoSuave,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -708,56 +883,49 @@ class _PainelScreenState extends State<PainelScreen> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 1,
-            blurRadius: 4,
-          ),
-        ],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _neutroBorda),
       ),
       child: Column(
         children: [
           InkWell(
             onTap: () => _toggleSecao(chave),
             borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(16),
-              topRight: Radius.circular(16),
+              topLeft: Radius.circular(12),
+              topRight: Radius.circular(12),
             ),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: cor.withOpacity(0.1),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
               ),
               child: Row(
                 children: [
-                  Icon(icone, color: cor),
-                  const SizedBox(width: 8),
+                  Icon(icone, color: cor, size: 20),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       titulo,
                       style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: _neutroTexto,
+                        letterSpacing: 0.1,
                       ),
                     ),
                   ),
                   Icon(
-                    isExpanded ? Icons.expand_less : Icons.expand_more,
-                    color: Colors.grey[700],
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: _neutroIcone,
                   ),
                 ],
               ),
             ),
           ),
           AnimatedCrossFade(
-            duration: const Duration(milliseconds: 250),
+            duration: const Duration(milliseconds: 200),
             crossFadeState: isExpanded
                 ? CrossFadeState.showFirst
                 : CrossFadeState.showSecond,
@@ -769,288 +937,321 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
+  // ============================================================
+  // FILTROS — linha única, chips compactos
+  // ============================================================
+
   Widget _buildFiltros(List<String> pivos, List<String> operacoesLista) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 1,
-            blurRadius: 4,
-          ),
-        ],
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _neutroBorda),
       ),
-      child: Column(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Filtros',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                ),
-                Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
-                      onPressed: _isGeneratingPdf ? null : _gerarRelatorioPDF,
-                      tooltip: 'Gerar Relatório PDF',
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.warning_amber,
-                        color: Colors.orange,
-                      ),
-                      onPressed: _verificarOperacoesAtrasadas,
-                      tooltip: 'Verificar operações atrasadas',
-                    ),
-                  ],
-                ),
-              ],
+          Expanded(
+            child: _buildFiltroChip(
+              icone: Icons.grass_outlined,
+              valor: _filtroPivo,
+              ativo: _filtroPivo != 'Todos',
+              onTap: () => _abrirMenuFiltro(
+                titulo: 'Pivô',
+                opcoes: pivos,
+                valorAtual: _filtroPivo,
+                onSelecionar: (v) {
+                  setState(() {
+                    _filtroPivo = v;
+                    _expandedPivos.clear();
+                    _invalidarCaches();
+                  });
+                },
+              ),
             ),
           ),
-          const Divider(height: 0),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Pivô',
-                            style: TextStyle(fontSize: 12, color: Colors.grey),
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<String>(
-                            value: _filtroPivo,
-                            decoration: InputDecoration(
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                            ),
-                            items: pivos
-                                .map(
-                                  (pivo) => DropdownMenuItem(
-                                    value: pivo,
-                                    child: Text(pivo),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) => setState(() {
-                              _filtroPivo = value!;
-                              _expandedPivos.clear();
-                              _invalidarCaches();
-                            }),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Operação',
-                            style: TextStyle(fontSize: 12, color: Colors.grey),
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<String>(
-                            value: _filtroOperacao,
-                            decoration: InputDecoration(
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                            ),
-                            items: operacoesLista
-                                .map(
-                                  (op) => DropdownMenuItem(
-                                    value: op,
-                                    child: Text(op),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) => setState(() {
-                              _filtroOperacao = value!;
-                              _expandedPivos.clear();
-                              _invalidarCaches();
-                            }),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _buildDataFilter(),
-              ],
+          const SizedBox(width: 6),
+          Expanded(
+            child: _buildFiltroChip(
+              icone: Icons.tune_outlined,
+              valor: _filtroOperacao,
+              ativo: _filtroOperacao != 'Todas',
+              onTap: () => _abrirMenuFiltro(
+                titulo: 'Operação',
+                opcoes: operacoesLista,
+                valorAtual: _filtroOperacao,
+                onSelecionar: (v) {
+                  setState(() {
+                    _filtroOperacao = v;
+                    _expandedPivos.clear();
+                    _invalidarCaches();
+                  });
+                },
+              ),
             ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _buildFiltroChip(
+              icone: Icons.event_outlined,
+              valor: _dataInicio != null
+                  ? _formatarDataCurta(_dataInicio!)
+                  : 'De',
+              ativo: _dataInicio != null,
+              onTap: () => _selecionarDataInicio(),
+              onClear: _dataInicio != null
+                  ? () {
+                      setState(() {
+                        _dataInicio = null;
+                        _expandedPivos.clear();
+                        _invalidarCaches();
+                      });
+                    }
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _buildFiltroChip(
+              icone: Icons.event_available_outlined,
+              valor: _dataFim != null
+                  ? _formatarDataCurta(_dataFim!)
+                  : 'Até',
+              ativo: _dataFim != null,
+              onTap: () => _selecionarDataFim(),
+              onClear: _dataFim != null
+                  ? () {
+                      setState(() {
+                        _dataFim = null;
+                        _expandedPivos.clear();
+                        _invalidarCaches();
+                      });
+                    }
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 4),
+          _buildAcaoIcone(
+            icone: Icons.picture_as_pdf_outlined,
+            tooltip: 'Gerar relatório PDF',
+            onTap: _isGeneratingPdf ? null : _gerarRelatorioPDF,
+          ),
+          _buildAcaoIcone(
+            icone: Icons.warning_amber_outlined,
+            tooltip: 'Verificar operações atrasadas',
+            onTap: _verificarOperacoesAtrasadas,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildDataFilter() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Text(
-              'Período',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            const Spacer(),
-            if (_temFiltroData)
-              TextButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _dataInicio = null;
-                    _dataFim = null;
-                    _expandedPivos.clear();
-                    _invalidarCaches();
-                  });
-                },
-                icon: const Icon(Icons.close, size: 14),
-                label: const Text(
-                  'Limpar',
-                  style: TextStyle(fontSize: 12),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.red,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  minimumSize: const Size(0, 28),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Row(
-          children: [
-            Expanded(
-              child: _buildDateField(
-                label: 'Data inicial',
-                value: _dataInicio,
-                onPick: (d) {
-                  setState(() {
-                    _dataInicio = d;
-                    if (_dataFim != null && _dataFim!.isBefore(d)) {
-                      _dataFim = d;
-                    }
-                    _expandedPivos.clear();
-                    _invalidarCaches();
-                  });
-                },
-                onClear: () {
-                  setState(() {
-                    _dataInicio = null;
-                    _expandedPivos.clear();
-                    _invalidarCaches();
-                  });
-                },
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildDateField(
-                label: 'Data final',
-                value: _dataFim,
-                onPick: (d) {
-                  setState(() {
-                    _dataFim = d;
-                    if (_dataInicio != null && _dataInicio!.isAfter(d)) {
-                      _dataInicio = d;
-                    }
-                    _expandedPivos.clear();
-                    _invalidarCaches();
-                  });
-                },
-                onClear: () {
-                  setState(() {
-                    _dataFim = null;
-                    _expandedPivos.clear();
-                    _invalidarCaches();
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDateField({
-    required String label,
-    required DateTime? value,
-    required ValueChanged<DateTime> onPick,
-    required VoidCallback onClear,
+  Widget _buildFiltroChip({
+    required IconData icone,
+    required String valor,
+    required bool ativo,
+    required VoidCallback onTap,
+    VoidCallback? onClear,
   }) {
     return InkWell(
-      onTap: () async {
-        final agora = DateTime.now();
-        final picked = await showDatePicker(
-          context: context,
-          initialDate: value ?? agora,
-          firstDate: DateTime(2024),
-          lastDate: DateTime(2027),
-          helpText: label,
-        );
-        if (picked != null) {
-          onPick(picked);
-        }
-      },
-      child: InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(fontSize: 12),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: ativo ? _destaqueFundo : _neutroFundo,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: ativo ? _destaqueBorda : _neutroBorda,
           ),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 12,
-          ),
-          suffixIcon: value != null
-              ? IconButton(
-                  icon: const Icon(Icons.close, size: 16),
-                  splashRadius: 16,
-                  onPressed: onClear,
-                )
-              : const Icon(Icons.calendar_today, size: 18),
         ),
-        child: Text(
-          value != null ? _formatarDataComAno(value) : '—',
-          style: TextStyle(
-            fontSize: 14,
-            color: value != null ? Colors.black87 : Colors.grey[600],
+        child: Row(
+          children: [
+            Icon(
+              icone,
+              size: 13,
+              color: ativo ? _destaque : _neutroIcone,
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                valor,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: ativo ? _destaque : _neutroTexto,
+                  fontWeight: ativo ? FontWeight.w500 : FontWeight.w400,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (onClear != null)
+              InkWell(
+                onTap: onClear,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(1),
+                  child: Icon(
+                    Icons.close,
+                    size: 12,
+                    color: ativo ? _destaque : _neutroIcone,
+                  ),
+                ),
+              )
+            else
+              Icon(
+                Icons.keyboard_arrow_down,
+                size: 14,
+                color: ativo ? _destaque : _neutroIcone,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAcaoIcone({
+    required IconData icone,
+    required String tooltip,
+    required VoidCallback? onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.all(6),
+          child: Icon(
+            icone,
+            size: 16,
+            color: onTap == null ? _neutroBorda : _neutroIcone,
           ),
         ),
       ),
     );
   }
+
+  Future<void> _selecionarDataInicio() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _dataInicio ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      helpText: 'Data inicial',
+    );
+    if (picked != null) {
+      setState(() {
+        _dataInicio = picked;
+        if (_dataFim != null && _dataFim!.isBefore(picked)) {
+          _dataFim = picked;
+        }
+        _expandedPivos.clear();
+        _invalidarCaches();
+      });
+    }
+  }
+
+  Future<void> _selecionarDataFim() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _dataFim ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      helpText: 'Data final',
+    );
+    if (picked != null) {
+      setState(() {
+        _dataFim = picked;
+        if (_dataInicio != null && _dataInicio!.isAfter(picked)) {
+          _dataInicio = picked;
+        }
+        _expandedPivos.clear();
+        _invalidarCaches();
+      });
+    }
+  }
+
+  Future<void> _abrirMenuFiltro({
+    required String titulo,
+    required List<String> opcoes,
+    required String valorAtual,
+    required ValueChanged<String> onSelecionar,
+  }) async {
+    final selecionado = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: _neutroBorda,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                titulo,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: _neutroTexto,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Divider(height: 0),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: opcoes.length,
+                  itemBuilder: (context, index) {
+                    final opcao = opcoes[index];
+                    final estaSelecionado = opcao == valorAtual;
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        opcao,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: estaSelecionado
+                              ? _destaque
+                              : _neutroTexto,
+                          fontWeight: estaSelecionado
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                        ),
+                      ),
+                      trailing: estaSelecionado
+                          ? const Icon(Icons.check, size: 18, color: _destaque)
+                          : null,
+                      onTap: () => Navigator.pop(context, opcao),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selecionado != null) {
+      onSelecionar(selecionado);
+    }
+  }
+
+  // ============================================================
+  // CARDS DE STATUS
+  // ============================================================
 
   Widget _buildCards(Map<String, int> resumo) {
     return Row(
@@ -1071,30 +1272,45 @@ class _PainelScreenState extends State<PainelScreen> {
   Widget _card(String status, int valor, Color cor) {
     return Expanded(
       child: Container(
-        height: 80,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
+        height: 76,
+        margin: const EdgeInsets.symmetric(horizontal: 3),
         decoration: BoxDecoration(
-          color: cor.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(12),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _neutroBorda),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              status,
-              style: TextStyle(
-                color: cor,
-                fontWeight: FontWeight.w600,
-                fontSize: 11,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: cor,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  status,
+                  style: const TextStyle(
+                    color: _neutroTextoSuave,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 6),
             Text(
               valor.toString(),
               style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: _neutroTexto,
               ),
             ),
           ],
@@ -1108,18 +1324,18 @@ class _PainelScreenState extends State<PainelScreen> {
       children: [
         const SizedBox(height: 12),
         SizedBox(
-          height: 280,
+          height: 260,
           child: total == 0
               ? const Center(
                   child: Text(
                     'Nenhum dado',
-                    style: TextStyle(color: Colors.grey),
+                    style: TextStyle(color: _neutroTextoSuave),
                   ),
                 )
               : Center(
                   child: SizedBox(
-                    width: 260,
-                    height: 260,
+                    width: 240,
+                    height: 240,
                     child: CustomPaint(
                       painter: _PieChartPainter(resumo, _cores, total),
                     ),
@@ -1135,33 +1351,26 @@ class _PainelScreenState extends State<PainelScreen> {
             final count = resumo[entry.key] ?? 0;
             if (count == 0) return const SizedBox.shrink();
             final percent = (count / total) * 100;
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: entry.value.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: entry.value,
-                      shape: BoxShape.circle,
-                    ),
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: entry.value,
+                    shape: BoxShape.circle,
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '${entry.key}: $count (${percent.toStringAsFixed(0)}%)',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Colors.black87,
-                    ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${entry.key} · $count (${percent.toStringAsFixed(0)}%)',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: _neutroTextoSuave,
                   ),
-                ],
-              ),
+                ),
+              ],
             );
           }).toList(),
         ),
@@ -1183,10 +1392,10 @@ class _PainelScreenState extends State<PainelScreen> {
             children: [
               Expanded(
                 child: _insightCard(
-                  icon: Icons.check_circle,
+                  icon: Icons.check_circle_outline,
                   titulo: 'Total Realizado',
                   valor: '${insights['totalRealizado'].toStringAsFixed(0)} ha',
-                  cor: Colors.green,
+                  cor: _cores['Concluído']!,
                   subtitle:
                       '${insights['operacoesConcluidas']} operações concluídas',
                 ),
@@ -1194,10 +1403,10 @@ class _PainelScreenState extends State<PainelScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: _insightCard(
-                  icon: Icons.schedule,
+                  icon: Icons.schedule_outlined,
                   titulo: 'Total a Executar',
                   valor: '${insights['totalAExecutar'].toStringAsFixed(0)} ha',
-                  cor: Colors.orange,
+                  cor: _cores['Planejada']!,
                   subtitle:
                       '${insights['operacoesPendentes']} operações pendentes',
                 ),
@@ -1209,25 +1418,25 @@ class _PainelScreenState extends State<PainelScreen> {
             children: [
               Expanded(
                 child: _insightCard(
-                  icon: Icons.calendar_today,
+                  icon: Icons.calendar_today_outlined,
                   titulo: 'Tempo Necessário',
                   valor: '${insights['diasAExecutar']} dias',
-                  cor: Colors.blue,
+                  cor: _cores['Em andamento']!,
                   subtitle: pivos == 0
                       ? 'Sem operações pendentes'
-                      : '$pivos pivô(s) em paralelo, respeitando janelas',
+                      : '$pivos pivô(s) em paralelo',
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _insightCard(
-                  icon: Icons.trending_up,
+                  icon: Icons.speed_outlined,
                   titulo: 'Capacidade Total',
                   valor: '${capacidade.toStringAsFixed(1)} ha/dia',
-                  cor: Colors.purple,
+                  cor: _neutroTexto,
                   subtitle: _filtroPivo != 'Todos'
-                      ? 'Gargalo do pivô (operação mais lenta)'
-                      : 'Soma única por operação padrão',
+                      ? 'Gargalo do pivô'
+                      : 'Soma das operações padrão',
                 ),
               ),
             ],
@@ -1254,14 +1463,8 @@ class _PainelScreenState extends State<PainelScreen> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            blurRadius: 4,
-            spreadRadius: 1,
-          ),
-        ],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _neutroBorda),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1269,62 +1472,65 @@ class _PainelScreenState extends State<PainelScreen> {
           InkWell(
             onTap: () => _toggleSecao(chave),
             borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(16),
-              topRight: Radius.circular(16),
+              topLeft: Radius.circular(12),
+              topRight: Radius.circular(12),
             ),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.green.withOpacity(0.1),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
               ),
               child: Row(
                 children: [
-                  Icon(Icons.agriculture, color: Colors.green[700]),
-                  const SizedBox(width: 8),
-                  Expanded(
+                  const Icon(
+                    Icons.agriculture_outlined,
+                    color: _neutroTexto,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
                     child: Text(
-                      _temFiltroData
-                          ? 'Plantios previstos no período'
-                          : 'Andamento das operações de preparo do solo',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                      'Andamento das operações de preparo do solo',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: _neutroTexto,
+                        letterSpacing: 0.1,
                       ),
                     ),
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 8,
-                      vertical: 4,
+                      vertical: 3,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(12),
+                      color: _neutroFundo,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: _neutroBorda),
                     ),
                     child: Text(
-                      '$totalOperacoes operações',
+                      '$totalOperacoes',
                       style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.black87,
+                        fontSize: 11,
+                        color: _neutroTextoSuave,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: 8),
                   Icon(
-                    isExpanded ? Icons.expand_less : Icons.expand_more,
-                    color: Colors.grey[700],
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: _neutroIcone,
                   ),
                 ],
               ),
             ),
           ),
           AnimatedCrossFade(
-            duration: const Duration(milliseconds: 250),
+            duration: const Duration(milliseconds: 200),
             crossFadeState: isExpanded
                 ? CrossFadeState.showFirst
                 : CrossFadeState.showSecond,
@@ -1354,8 +1560,8 @@ class _PainelScreenState extends State<PainelScreen> {
                     operacoesCount - dispensadasCount;
 
                 final dataPlantio = item['plantio'] as DateTime?;
-                final aviso = item['aviso'] as String?;
-                final avisoConcluido = item['avisoConcluido'] as bool? ?? false;
+                final anterior = item['anterior'] as String?;
+                final proxima = item['proxima'] as String?;
 
                 return Column(
                   children: [
@@ -1370,121 +1576,129 @@ class _PainelScreenState extends State<PainelScreen> {
                         ),
                         decoration: BoxDecoration(
                           color: isExpandedPivo
-                              ? Colors.green.withOpacity(0.05)
-                              : null,
+                              ? _neutroFundo
+                              : Colors.transparent,
                         ),
-                        child: Row(
+                        child: Column(
                           children: [
-                            Icon(
-                              isExpandedPivo
-                                  ? Icons.expand_less
-                                  : Icons.expand_more,
-                              color: Colors.grey,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  // NOME + AVISO
-                                  Row(
-                                    children: [
-                                      Flexible(
-                                        child: Text(
-                                          pivoNome,
-                                          style: const TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.black87,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      if (aviso != null) ...[
-                                        const SizedBox(width: 8),
-                                        Flexible(
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: avisoConcluido
-                                                  ? Colors.grey.withOpacity(0.15)
-                                                  : Colors.green
-                                                      .withOpacity(0.15),
-                                              borderRadius:
-                                                  BorderRadius.circular(6),
-                                            ),
-                                            child: Text(
-                                              aviso,
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w600,
-                                                color: avisoConcluido
-                                                    ? Colors.grey[800]
-                                                    : Colors.green[800],
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '$concluidasCount de $operacoesExecutaveis operações concluídas • '
-                                    '$andamentoCount em andamento • '
-                                    '$planejadasCount planejadas • '
-                                    '$atrasadasCount atrasadas'
-                                    '${dispensadasCount > 0 ? ' • $dispensadasCount dispensadas' : ''}',
-                                    style: const TextStyle(
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  isExpandedPivo
+                                      ? Icons.keyboard_arrow_up
+                                      : Icons.keyboard_arrow_down,
+                                  color: _neutroIcone,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    anterior ?? 'Nenhuma operação',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
                                       fontSize: 12,
-                                      color: Colors.grey,
+                                      color: anterior != null
+                                          ? _neutroTexto
+                                          : _neutroTextoSuave,
+                                      fontStyle: anterior == null
+                                          ? FontStyle.italic
+                                          : FontStyle.normal,
                                     ),
                                   ),
-                                  if (dataPlantio != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(
-                                        'Plantio: ${_formatarDataComAno(dataPlantio)} '
-                                        '(${dataPlantio.difference(DateTime.now()).inDays} dias)',
-                                        style: TextStyle(
-                                          color: dataPlantio
-                                                      .difference(
-                                                        DateTime.now(),
-                                                      )
-                                                      .inDays <
-                                                  15
-                                              ? Colors.red
-                                              : Colors.grey,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
+                                ),
+
+                                const SizedBox(width: 4),
+                                Text(
+                                  '—',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: _neutroBorda,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+
+                                Expanded(
+                                  flex: 3,
+                                  child: Text(
+                                    pivoNome,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: _neutroTexto,
                                     ),
-                                ],
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+
+                                const SizedBox(width: 4),
+                                Text(
+                                  '—',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: _neutroBorda,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    proxima ?? 'Pronto para plantio',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: proxima != null
+                                          ? _neutroTexto
+                                          : _cores['Concluído'],
+                                      fontWeight: proxima != null
+                                          ? FontWeight.w400
+                                          : FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+
+                                const SizedBox(width: 52),
+                              ],
+                            ),
+
+                            const SizedBox(height: 6),
+
+                            Text(
+                              '$concluidasCount de $operacoesExecutaveis concluídas · '
+                              '$andamentoCount em andamento · '
+                              '$planejadasCount planejadas · '
+                              '$atrasadasCount atrasadas'
+                              '${dispensadasCount > 0 ? ' · $dispensadasCount dispensadas' : ''}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: _neutroTextoSuave,
                               ),
                             ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.green.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                '${(executado * 100).toStringAsFixed(0)}%',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.green[700],
-                                  fontWeight: FontWeight.bold,
+
+                            if (dataPlantio != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  'Plantio: ${_formatarDataComAno(dataPlantio)} '
+                                  '(${dataPlantio.difference(DateTime.now()).inDays} dias)',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: dataPlantio
+                                                .difference(DateTime.now())
+                                                .inDays <
+                                            15
+                                        ? _cores['Atrasada']
+                                        : _neutroTextoSuave,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
                               ),
-                            ),
                           ],
                         ),
                       ),
@@ -1501,77 +1715,37 @@ class _PainelScreenState extends State<PainelScreen> {
                             const Divider(height: 0),
                             const SizedBox(height: 12),
                             ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
+                              borderRadius: BorderRadius.circular(4),
                               child: SizedBox(
-                                height: 24,
+                                height: 20,
                                 child: Row(
                                   children: [
                                     if (concluido > 0)
                                       Expanded(
                                         flex: (concluido * 1000).round(),
                                         child: Container(
-                                          color: Colors.green,
-                                          child: Center(
-                                            child: Text(
-                                              '${(concluido * 100).toStringAsFixed(0)}%',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
+                                          color: _cores['Concluído'],
                                         ),
                                       ),
                                     if (andamento > 0)
                                       Expanded(
                                         flex: (andamento * 1000).round(),
                                         child: Container(
-                                          color: Colors.blue,
-                                          child: Center(
-                                            child: Text(
-                                              '${(andamento * 100).toStringAsFixed(0)}%',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
+                                          color: _cores['Em andamento'],
                                         ),
                                       ),
                                     if (atrasado > 0)
                                       Expanded(
                                         flex: (atrasado * 1000).round(),
                                         child: Container(
-                                          color: Colors.red,
-                                          child: Center(
-                                            child: Text(
-                                              '${(atrasado * 100).toStringAsFixed(0)}%',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
+                                          color: _cores['Atrasada'],
                                         ),
                                       ),
                                     if (planejado > 0)
                                       Expanded(
                                         flex: (planejado * 1000).round(),
                                         child: Container(
-                                          color: Colors.amber,
-                                          child: Center(
-                                            child: Text(
-                                              '${(planejado * 100).toStringAsFixed(0)}%',
-                                              style: const TextStyle(
-                                                color: Colors.black87,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
+                                          color: _cores['Planejada'],
                                         ),
                                       ),
                                   ],
@@ -1580,64 +1754,57 @@ class _PainelScreenState extends State<PainelScreen> {
                             ),
                             const SizedBox(height: 12),
                             Wrap(
-                              spacing: 14,
-                              runSpacing: 8,
+                              spacing: 12,
+                              runSpacing: 6,
                               children: [
-                                _buildLegendItemWithCount(
-                                  '🟩',
+                                _legendaNeutra(
+                                  _cores['Concluído']!,
                                   'Concluído',
-                                  (concluido * 100).toStringAsFixed(0),
                                   concluidasCount,
-                                  Colors.green,
                                 ),
-                                _buildLegendItemWithCount(
-                                  '🟦',
+                                _legendaNeutra(
+                                  _cores['Em andamento']!,
                                   'Em andamento',
-                                  (andamento * 100).toStringAsFixed(0),
                                   andamentoCount,
-                                  Colors.blue,
                                 ),
-                                _buildLegendItemWithCount(
-                                  '🟥',
+                                _legendaNeutra(
+                                  _cores['Atrasada']!,
                                   'Atrasado',
-                                  (atrasado * 100).toStringAsFixed(0),
                                   atrasadasCount,
-                                  Colors.red,
                                 ),
-                                _buildLegendItemWithCount(
-                                  '🟨',
+                                _legendaNeutra(
+                                  _cores['Planejada']!,
                                   'Planejado',
-                                  (planejado * 100).toStringAsFixed(0),
                                   planejadasCount,
-                                  Colors.amber,
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 10),
                             Container(
-                              padding: const EdgeInsets.all(12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
                               decoration: BoxDecoration(
-                                color: Colors.grey.withOpacity(0.05),
+                                color: _neutroFundo,
                                 borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: _neutroBorda),
                               ),
                               child: Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceAround,
                                 children: [
-                                  _buildMetricaItem(
-                                    'Total Dias',
+                                  _metricaNeutra(
+                                    'Total dias',
                                     '${total.toStringAsFixed(0)}',
-                                    Colors.grey[600]!,
                                   ),
-                                  _buildMetricaItem(
+                                  _metricaNeutra(
                                     'Concluídos',
                                     '$concluidasCount/$operacoesExecutaveis',
-                                    Colors.green,
                                   ),
-                                  _buildMetricaItem(
+                                  _metricaNeutra(
                                     'Execução',
                                     '${(executado * 100).toStringAsFixed(0)}%',
-                                    Colors.green[700]!,
                                   ),
                                 ],
                               ),
@@ -1658,51 +1825,45 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
-  Widget _buildLegendItemWithCount(
-    String icon,
-    String label,
-    String percent,
-    int count,
-    Color color,
-  ) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(icon, style: const TextStyle(fontSize: 14)),
-          const SizedBox(width: 4),
-          Text(
-            '$label: $count ($percent%)',
-            style: TextStyle(
-              fontSize: 12,
-              color: color,
-              fontWeight: FontWeight.w500,
-            ),
+  Widget _legendaNeutra(Color cor, String label, int count) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: cor, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 5),
+        Text(
+          '$label · $count',
+          style: const TextStyle(
+            fontSize: 11,
+            color: _neutroTextoSuave,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  Widget _buildMetricaItem(String label, String value, Color color) {
+  Widget _metricaNeutra(String label, String value) {
     return Column(
       children: [
         Text(
           value,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: color,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: _neutroTexto,
           ),
         ),
+        const SizedBox(height: 2),
         Text(
           label,
-          style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+          style: const TextStyle(
+            fontSize: 10,
+            color: _neutroTextoSuave,
+          ),
         ),
       ],
     );
@@ -1718,40 +1879,47 @@ class _PainelScreenState extends State<PainelScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: cor.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: cor.withOpacity(0.2)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _neutroBorda),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, color: cor, size: 20),
-              const SizedBox(width: 8),
+              Icon(icon, color: cor, size: 16),
+              const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   titulo,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: _neutroTextoSuave,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(
             valor,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: cor,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+              color: _neutroTexto,
             ),
           ),
           if (subtitle != null)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: 2),
               child: Text(
                 subtitle,
-                style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: _neutroTextoSuave,
+                ),
               ),
             ),
         ],
@@ -1803,14 +1971,8 @@ class _PainelScreenState extends State<PainelScreen> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 1,
-            blurRadius: 4,
-          ),
-        ],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _neutroBorda),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1818,67 +1980,68 @@ class _PainelScreenState extends State<PainelScreen> {
           InkWell(
             onTap: () => _toggleSecao(chave),
             borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(16),
-              topRight: Radius.circular(16),
+              topLeft: Radius.circular(12),
+              topRight: Radius.circular(12),
             ),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: cor.withOpacity(0.1),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
               ),
               child: Row(
                 children: [
                   Container(
-                    width: 12,
-                    height: 12,
+                    width: 8,
+                    height: 8,
                     decoration: BoxDecoration(
                       color: cor,
                       shape: BoxShape.circle,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       'Operações $status',
                       style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: _neutroTexto,
+                        letterSpacing: 0.1,
                       ),
                     ),
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 8,
-                      vertical: 4,
+                      vertical: 3,
                     ),
                     decoration: BoxDecoration(
-                      color: cor.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(12),
+                      color: _neutroFundo,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: _neutroBorda),
                     ),
                     child: Text(
-                      '$totalOperacoes operações',
+                      '$totalOperacoes',
                       style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.black87,
+                        fontSize: 11,
+                        color: _neutroTextoSuave,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: 8),
                   Icon(
-                    isExpanded ? Icons.expand_less : Icons.expand_more,
-                    color: Colors.grey[700],
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: _neutroIcone,
                   ),
                 ],
               ),
             ),
           ),
           AnimatedCrossFade(
-            duration: const Duration(milliseconds: 250),
+            duration: const Duration(milliseconds: 200),
             crossFadeState: isExpanded
                 ? CrossFadeState.showFirst
                 : CrossFadeState.showSecond,
@@ -1888,7 +2051,7 @@ class _PainelScreenState extends State<PainelScreen> {
                     child: Center(
                       child: Text(
                         'Nenhuma operação',
-                        style: TextStyle(color: Colors.grey),
+                        style: TextStyle(color: _neutroTextoSuave),
                       ),
                     ),
                   )
@@ -1923,18 +2086,19 @@ class _PainelScreenState extends State<PainelScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: isExpandedPivo
-                                    ? cor.withOpacity(0.05)
-                                    : null,
+                                    ? _neutroFundo
+                                    : Colors.transparent,
                               ),
                               child: Row(
                                 children: [
                                   Icon(
                                     isExpandedPivo
-                                        ? Icons.expand_less
-                                        : Icons.expand_more,
-                                    color: Colors.grey,
+                                        ? Icons.keyboard_arrow_up
+                                        : Icons.keyboard_arrow_down,
+                                    color: _neutroIcone,
+                                    size: 20,
                                   ),
-                                  const SizedBox(width: 12),
+                                  const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment:
@@ -1943,37 +2107,20 @@ class _PainelScreenState extends State<PainelScreen> {
                                         Text(
                                           pivoNome,
                                           style: const TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.black87,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: _neutroTexto,
                                           ),
                                         ),
-                                        const SizedBox(height: 4),
+                                        const SizedBox(height: 2),
                                         Text(
-                                          '${operacoes.length} operações • ${areaTotalPivo.toStringAsFixed(0)} ha${status != 'Concluído' && status != 'Dispensada' ? ' • $diasTotaisPivo dias' : ''}',
+                                          '${operacoes.length} operações · ${areaTotalPivo.toStringAsFixed(0)} ha${status != 'Concluído' && status != 'Dispensada' ? ' · $diasTotaisPivo dias' : ''}',
                                           style: const TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey,
+                                            fontSize: 11,
+                                            color: _neutroTextoSuave,
                                           ),
                                         ),
                                       ],
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: cor.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      status,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: cor,
-                                      ),
                                     ),
                                   ),
                                 ],
@@ -2005,7 +2152,8 @@ class _PainelScreenState extends State<PainelScreen> {
   Widget _buildOperacaoTile(OperacaoExecutada op, Color cor) {
     final diasNecessarios = op.getDiasNecessarios();
     final areaTotalComPassadas = op.getAreaTotalComPassadas();
-    final tempoPrevisto = diasNecessarios == 1 ? '1 dia' : '$diasNecessarios dias';
+    final tempoPrevisto =
+        diasNecessarios == 1 ? '1 dia' : '$diasNecessarios dias';
     final dataInicioJanela = op.getDataInicioJanelaCalculada();
     final dataFimJanela = op.getDataFimJanelaCalculada();
     final dataInicio = op.dataInicioPrimeira;
@@ -2014,219 +2162,173 @@ class _PainelScreenState extends State<PainelScreen> {
     final mensagemAlerta = op.mensagemInconsistencia;
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       decoration: BoxDecoration(
-        color: op.corDestaqueInconsistencia,
+        color: isInconsistente
+            ? _cores['Atrasada']!.withOpacity(0.05)
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
         border: isInconsistente
-            ? Border.all(color: Colors.red, width: 1.5)
+            ? Border.all(color: _cores['Atrasada']!.withOpacity(0.3))
             : null,
       ),
-      child: ListTile(
-        leading: Container(
-          width: 4,
-          height: 90,
-          decoration: BoxDecoration(
-            color: isInconsistente ? Colors.red : cor,
-            borderRadius: BorderRadius.circular(2),
-          ),
-        ),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                op.operacaoNome ?? '',
-                style: TextStyle(
-                  fontWeight: FontWeight.w500,
-                  color: Colors.black87,
-                  decoration: op.status == 'dispensada'
-                      ? TextDecoration.lineThrough
-                      : null,
-                ),
-              ),
-            ),
-            if (isInconsistente)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Text(
-                  'ATRASADA',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-          ],
-        ),
-        subtitle: Column(
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SizedBox(height: 4),
-            if (mensagemAlerta != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  mensagemAlerta,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.red,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+            Container(
+              width: 3,
+              height: 68,
+              margin: const EdgeInsets.only(top: 2, right: 10),
+              decoration: BoxDecoration(
+                color: cor,
+                borderRadius: BorderRadius.circular(2),
               ),
-            Wrap(
-              spacing: 12,
-              runSpacing: 4,
-              children: [
-                _infoChip(
-                  Icons.square_foot,
-                  '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas}x)',
-                  cor,
-                ),
-                _infoChip(
-                  Icons.speed,
-                  '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia',
-                  cor,
-                ),
-                if (op.status != 'dispensada' && op.status != 'concluida')
-                  _infoChip(Icons.timer, tempoPrevisto, cor),
-              ],
             ),
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.calendar_today,
-                    size: 11,
-                    color: isInconsistente ? Colors.red : Colors.grey,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          op.operacaoNome ?? '',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: _neutroTexto,
+                            decoration: op.status == 'dispensada'
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
+                        ),
+                      ),
+                      if (isInconsistente)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _cores['Atrasada']!.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Atrasada',
+                            style: TextStyle(
+                              color: _cores['Atrasada'],
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Janela: ${_formatarDataComAno(dataInicioJanela)} a ${_formatarDataComAno(dataFimJanela)}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: isInconsistente ? Colors.red : Colors.grey,
-                      fontWeight: isInconsistente
-                          ? FontWeight.bold
-                          : FontWeight.normal,
+                  if (mensagemAlerta != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      mensagemAlerta,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: _cores['Atrasada'],
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
+                  ],
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    children: [
+                      _infoNeutro(
+                        Icons.square_foot_outlined,
+                        '${areaTotalComPassadas.toStringAsFixed(0)} ha (${op.numeroPassadas}x)',
+                      ),
+                      _infoNeutro(
+                        Icons.speed_outlined,
+                        '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia',
+                      ),
+                      if (op.status != 'dispensada' &&
+                          op.status != 'concluida')
+                        _infoNeutro(Icons.timer_outlined, tempoPrevisto),
+                    ],
                   ),
+                  const SizedBox(height: 6),
+                  _infoNeutro(
+                    Icons.date_range_outlined,
+                    'Janela: ${_formatarDataComAno(dataInicioJanela)} a ${_formatarDataComAno(dataFimJanela)}',
+                    destaque: isInconsistente,
+                  ),
+                  if (op.status == 'em_andamento' && dataInicio != null) ...[
+                    const SizedBox(height: 4),
+                    _infoNeutro(
+                      Icons.play_arrow_outlined,
+                      'Iniciado em: ${_formatarDataComAno(dataInicio)}',
+                    ),
+                  ],
+                  if (op.status == 'concluida') ...[
+                    if (dataInicio != null) ...[
+                      const SizedBox(height: 4),
+                      _infoNeutro(
+                        Icons.play_arrow_outlined,
+                        'Iniciado em: ${_formatarDataComAno(dataInicio)}',
+                      ),
+                    ],
+                    if (dataConclusao != null) ...[
+                      const SizedBox(height: 2),
+                      _infoNeutro(
+                        Icons.check_circle_outline,
+                        'Concluído em: ${_formatarDataComAno(dataConclusao)}',
+                      ),
+                    ],
+                  ],
+                  if (op.numeroPassadas != null &&
+                      op.numeroPassadas! > 1 &&
+                      op.status != 'concluida' &&
+                      op.status != 'dispensada') ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Múltiplas passadas necessárias',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: _cores['Planejada']!.withOpacity(0.9),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
-            if (op.status == 'em_andamento' && dataInicio != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.play_arrow,
-                      size: 12,
-                      color: Colors.blue,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Iniciado em: ${_formatarDataComAno(dataInicio)}',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.blue,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            if (op.status == 'concluida')
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (dataInicio != null)
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.play_arrow,
-                            size: 12,
-                            color: Colors.green,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Iniciado em: ${_formatarDataComAno(dataInicio)}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.green,
-                            ),
-                          ),
-                        ],
-                      ),
-                    if (dataConclusao != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.check_circle,
-                              size: 12,
-                              color: Colors.green,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Concluído em: ${_formatarDataComAno(dataConclusao)}',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.green,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            if (op.numeroPassadas != null &&
-                op.numeroPassadas! > 1 &&
-                op.status != 'concluida' &&
-                op.status != 'dispensada')
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text(
-                  '⚠️ Múltiplas passadas necessárias',
-                  style: TextStyle(fontSize: 10, color: Colors.orange),
-                ),
-              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _infoChip(IconData icon, String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 10, color: color),
-          const SizedBox(width: 2),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 10, color: Colors.black87),
+  Widget _infoNeutro(
+    IconData icon,
+    String label, {
+    bool destaque = false,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 11,
+          color: destaque ? _cores['Atrasada'] : _neutroIcone,
+        ),
+        const SizedBox(width: 3),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: destaque ? _cores['Atrasada'] : _neutroTextoSuave,
+            fontWeight: destaque ? FontWeight.w500 : FontWeight.w400,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -2288,8 +2390,8 @@ class _PieChartPainter extends CustomPainter {
           text: TextSpan(
             text: "${percent.toStringAsFixed(0)}%",
             style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
               color: Colors.white,
             ),
           ),
@@ -2303,7 +2405,7 @@ class _PieChartPainter extends CustomPainter {
         );
         canvas.drawRRect(
           RRect.fromRectAndRadius(textRect, const Radius.circular(4)),
-          Paint()..color = Colors.black.withOpacity(0.5),
+          Paint()..color = Colors.black.withOpacity(0.4),
         );
         tp.paint(
           canvas,
