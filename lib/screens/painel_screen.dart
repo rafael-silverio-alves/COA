@@ -18,7 +18,7 @@ class PainelScreen extends StatefulWidget {
 class _PainelScreenState extends State<PainelScreen> {
   String _filtroPivo = 'Todos';
   String _filtroOperacao = 'Todas';
-  String? _filtroAnoSafra; // null = todos os anos safra do período
+  String? _filtroAnoSafra;
   DateTime? _dataInicio;
   DateTime? _dataFim;
   Map<String, bool> _expandedPivos = {};
@@ -29,11 +29,11 @@ class _PainelScreenState extends State<PainelScreen> {
     'insights': false,
     'grafico': false,
     'resumoPlantios': false,
-    'ops_Concluído': false,
+    'ops_Concluídas': false,
     'ops_Em andamento': false,
-    'ops_Planejada': false,
-    'ops_Atrasada': false,
-    'ops_Dispensada': false,
+    'ops_Planejadas': false,
+    'ops_Atrasadas': false,
+    'ops_Dispensadas': false,
   };
 
   List<OperacaoExecutada>? _operacoesFiltradasCache;
@@ -47,7 +47,6 @@ class _PainelScreenState extends State<PainelScreen> {
   Map<String, dynamic>? _insightsCache;
   Map<String, dynamic>? _progressoPivosCache;
 
-  // Cache dos anos safra disponíveis por período
   List<String>? _anosSafraDisponiveisCache;
   DateTime? _lastAnoDataInicio;
   DateTime? _lastAnoDataFim;
@@ -103,7 +102,7 @@ class _PainelScreenState extends State<PainelScreen> {
     }
 
     final lista = anos.toList();
-    lista.sort((a, b) => b.compareTo(a)); // mais recente primeiro
+    lista.sort((a, b) => b.compareTo(a));
 
     _anosSafraDisponiveisCache = lista;
     return lista;
@@ -146,7 +145,6 @@ class _PainelScreenState extends State<PainelScreen> {
       _temFiltroData;
 
   List<OperacaoExecutada> _calcularOperacoesFiltradas() {
-    // Se o ano safra selecionado deixou de ser válido, limpa.
     if (_filtroAnoSafra != null && !_anoSafraSelecionadoValido) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -166,7 +164,6 @@ class _PainelScreenState extends State<PainelScreen> {
         return false;
       }
 
-      // Filtro por ano safra
       if (anoEfetivo != null) {
         final ano = op.anoSafra ??
             (op.dataPlantio != null
@@ -174,8 +171,6 @@ class _PainelScreenState extends State<PainelScreen> {
                 : null);
         if (ano != anoEfetivo) return false;
       } else if (_temFiltroData) {
-        // Sem ano safra específico, mas com filtro de data:
-        // só entram operações cujo plantio está no período.
         final plantio = op.dataPlantio;
         if (plantio == null) return false;
         if (_dataInicio != null && plantio.isBefore(_dataInicio!)) {
@@ -362,7 +357,6 @@ class _PainelScreenState extends State<PainelScreen> {
   Map<String, dynamic> get _progressoPivos {
     if (_progressoPivosCache != null) return _progressoPivosCache!;
 
-    // PASSO 1 — prontoParaPlantio por pivô, escopado ao conjunto filtrado.
     final Map<String, bool> prontoPorPivo = {};
 
     final Map<String, List<OperacaoExecutada>> todasPorPivo = {};
@@ -383,7 +377,6 @@ class _PainelScreenState extends State<PainelScreen> {
       prontoPorPivo[pivo] = todasFinalizadas && !temAndamento;
     });
 
-    // PASSO 2 — lista exibida.
     final Map<String, dynamic> resultado = {};
     final Set<String> pivosNoPeriodo = {};
 
@@ -410,7 +403,6 @@ class _PainelScreenState extends State<PainelScreen> {
         'dispensadas': 0,
       };
 
-      // Operações do pivô escopadas ao filtro vigente.
       final operacoesPivo = _operacoesFiltradas
           .where((op) => op.pivoNome == pivoNome)
           .toList();
@@ -477,7 +469,6 @@ class _PainelScreenState extends State<PainelScreen> {
       item['percentualPlanejado'] = percentualPlanejado;
       item['percentualExecutado'] = percentualConcluido + percentualAndamento;
 
-      // ANTERIOR / PRÓXIMA — usa apenas as operações escopadas.
       final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivo)
         ..sort((a, b) =>
             (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
@@ -849,15 +840,20 @@ class _PainelScreenState extends State<PainelScreen> {
                 const SizedBox(height: 16),
                 _buildResumoPlantios(),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Concluído', _cores['Concluído']!),
+                _buildSecaoOperacoes('Concluído', 'Concluídas',
+                    _cores['Concluído']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Em andamento', _cores['Em andamento']!),
+                _buildSecaoOperacoes('Em andamento', 'Em andamento',
+                    _cores['Em andamento']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Planejada', _cores['Planejada']!),
+                _buildSecaoOperacoes('Planejada', 'Planejadas',
+                    _cores['Planejada']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Atrasada', _cores['Atrasada']!),
+                _buildSecaoOperacoes('Atrasada', 'Atrasadas',
+                    _cores['Atrasada']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Dispensada', _cores['Dispensada']!),
+                _buildSecaoOperacoes('Dispensada', 'Dispensadas',
+                    _cores['Dispensada']!),
               ],
             ),
           ),
@@ -971,7 +967,8 @@ class _PainelScreenState extends State<PainelScreen> {
           AnimatedCrossFade(
             duration: const Duration(milliseconds: 200),
             crossFadeState: isExpanded
-                ? CrossFadeState.showFirst                : CrossFadeState.showSecond,
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
             firstChild: child,
             secondChild: const SizedBox(width: double.infinity),
           ),
@@ -1005,7 +1002,7 @@ class _PainelScreenState extends State<PainelScreen> {
                 size: 13,
                 color: _neutroIcone,
               ),
-              valor: _filtroPivo,
+              valor: _filtroPivo != 'Todos' ? _filtroPivo : 'Pivôs',
               ativo: _filtroPivo != 'Todos',
               onTap: () => _abrirMenuFiltro(
                 titulo: 'Pivô',
@@ -1025,7 +1022,8 @@ class _PainelScreenState extends State<PainelScreen> {
           Expanded(
             child: _buildFiltroChip(
               leading: const Text('🚜', style: TextStyle(fontSize: 13)),
-              valor: _filtroOperacao,
+              valor:
+                  _filtroOperacao != 'Todas' ? _filtroOperacao : 'Operações',
               ativo: _filtroOperacao != 'Todas',
               onTap: () => _abrirMenuFiltro(
                 titulo: 'Operação',
@@ -1049,7 +1047,7 @@ class _PainelScreenState extends State<PainelScreen> {
                 size: 13,
                 color: _neutroIcone,
               ),
-              valor: anoAtualValido ? _filtroAnoSafra! : 'Safra',
+              valor: anoAtualValido ? _filtroAnoSafra! : 'Safras',
               ativo: anoAtualValido,
               onTap: () => _abrirMenuAnoSafra(anos),
               onClear: anoAtualValido
@@ -2115,8 +2113,12 @@ class _PainelScreenState extends State<PainelScreen> {
     );
   }
 
-  Widget _buildSecaoOperacoes(String status, Color cor) {
-    final chave = 'ops_$status';
+  Widget _buildSecaoOperacoes(
+    String status,
+    String tituloPlural,
+    Color cor,
+  ) {
+    final chave = 'ops_$tituloPlural';
     final isExpanded = _isSecaoExpandida(chave);
 
     List<OperacaoExecutada> operacoesStatus = [];
@@ -2189,7 +2191,7 @@ class _PainelScreenState extends State<PainelScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Operações $status',
+                      'Operações $tituloPlural',
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
@@ -2251,7 +2253,7 @@ class _PainelScreenState extends State<PainelScreen> {
                       final pivoNome = pivosLista[index];
                       final operacoes = operacoesPorPivo[pivoNome]!;
                       final isExpandedPivo =
-                          _expandedPivos['${status}_$pivoNome'] ?? false;
+                          _expandedPivos['${tituloPlural}_$pivoNome'] ?? false;
 
                       double areaTotalPivo = 0;
                       int diasTotaisPivo = 0;
@@ -2264,7 +2266,8 @@ class _PainelScreenState extends State<PainelScreen> {
                         children: [
                           InkWell(
                             onTap: () => setState(
-                              () => _expandedPivos['${status}_$pivoNome'] =
+                              () => _expandedPivos[
+                                      '${tituloPlural}_$pivoNome'] =
                                   !isExpandedPivo,
                             ),
                             child: Container(
