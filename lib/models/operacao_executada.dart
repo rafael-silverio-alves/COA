@@ -17,6 +17,7 @@ class OperacaoExecutada {
   
   String? pivoNome;
   String? operacaoNome;
+  String? anoSafra;  
   double? rendimentoHaDia;
   double? areaTotal;
   int? diasAntesPlantio;
@@ -153,6 +154,8 @@ class OperacaoExecutada {
   bool get isConcluida => status == 'concluida';
   bool get isPlanejada => status == 'planejada';
   bool get isDispensada => status == 'dispensada';
+
+ 
 
   void atualizarStatus(String novoStatus) {
     status = novoStatus;

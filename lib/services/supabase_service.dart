@@ -282,6 +282,15 @@ class SupabaseService {
               ? DateTime.tryParse(safraData['data_plantio'])
               : null;
 
+          // NOVO: lê o ano_safra direto do banco. Se vier nulo, deriva
+          // a partir da data de plantio no formato "YYYY/YYYY+1".
+          final anoSafraBruto = safraData['ano_safra'] as String?;
+          final anoSafra = (anoSafraBruto != null && anoSafraBruto.isNotEmpty)
+              ? anoSafraBruto
+              : (dataPlantio != null
+                  ? '${dataPlantio.year}/${dataPlantio.year + 1}'
+                  : null);
+
           final janelaInicioDias = opPadraoData['janela_inicio'] as int?;
           final janelaFimDias = opPadraoData['janela_fim'] as int?;
           final diasAntesPlantio =
@@ -338,6 +347,7 @@ class SupabaseService {
               _normalizarString(pivoData?['nome'] as String? ?? 'Sem Pivô');
           op.areaTotal = (pivoData?['area_total'] as num?)?.toDouble() ?? 0;
           op.dataPlantio = dataPlantio;
+          op.anoSafra = anoSafra; // NOVO
           op.operacaoNome =
               _normalizarString(opPadraoData['nome'] as String? ?? 'Sem nome');
           op.rendimentoHaDia =

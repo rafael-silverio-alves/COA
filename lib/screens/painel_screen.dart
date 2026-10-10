@@ -18,6 +18,7 @@ class PainelScreen extends StatefulWidget {
 class _PainelScreenState extends State<PainelScreen> {
   String _filtroPivo = 'Todos';
   String _filtroOperacao = 'Todas';
+  String? _filtroAnoSafra; // null = todos os anos safra do período
   DateTime? _dataInicio;
   DateTime? _dataFim;
   Map<String, bool> _expandedPivos = {};
@@ -38,12 +39,18 @@ class _PainelScreenState extends State<PainelScreen> {
   List<OperacaoExecutada>? _operacoesFiltradasCache;
   String? _lastFiltroPivo;
   String? _lastFiltroOperacao;
+  String? _lastFiltroAnoSafra;
   DateTime? _lastDataInicio;
   DateTime? _lastDataFim;
 
   Map<String, int>? _resumoCache;
   Map<String, dynamic>? _insightsCache;
   Map<String, dynamic>? _progressoPivosCache;
+
+  // Cache dos anos safra disponíveis por período
+  List<String>? _anosSafraDisponiveisCache;
+  DateTime? _lastAnoDataInicio;
+  DateTime? _lastAnoDataFim;
 
   final Map<String, Color> _cores = {
     'Concluído': const Color(0xFF22C55E),
@@ -69,10 +76,49 @@ class _PainelScreenState extends State<PainelScreen> {
     _progressoPivosCache = null;
   }
 
+  // ============================================================
+  // ANOS SAFRA DISPONÍVEIS (respeitando o filtro de data)
+  // ============================================================
+  List<String> get _anosSafraDisponiveis {
+    if (_anosSafraDisponiveisCache != null &&
+        _dataInicio == _lastAnoDataInicio &&
+        _dataFim == _lastAnoDataFim) {
+      return _anosSafraDisponiveisCache!;
+    }
+
+    _lastAnoDataInicio = _dataInicio;
+    _lastAnoDataFim = _dataFim;
+
+    final Set<String> anos = {};
+
+    for (final op in widget.service.operacoes) {
+      final plantio = op.dataPlantio;
+      if (plantio == null) continue;
+
+      if (_dataInicio != null && plantio.isBefore(_dataInicio!)) continue;
+      if (_dataFim != null && plantio.isAfter(_dataFim!)) continue;
+
+      final ano = op.anoSafra ?? '${plantio.year}/${plantio.year + 1}';
+      anos.add(ano);
+    }
+
+    final lista = anos.toList();
+    lista.sort((a, b) => b.compareTo(a)); // mais recente primeiro
+
+    _anosSafraDisponiveisCache = lista;
+    return lista;
+  }
+
+  bool get _anoSafraSelecionadoValido {
+    if (_filtroAnoSafra == null) return true;
+    return _anosSafraDisponiveis.contains(_filtroAnoSafra);
+  }
+
   List<OperacaoExecutada> get _operacoesFiltradas {
     if (_operacoesFiltradasCache != null &&
         _filtroPivo == _lastFiltroPivo &&
         _filtroOperacao == _lastFiltroOperacao &&
+        _filtroAnoSafra == _lastFiltroAnoSafra &&
         _dataInicio == _lastDataInicio &&
         _dataFim == _lastDataFim) {
       return _operacoesFiltradasCache!;
@@ -80,6 +126,7 @@ class _PainelScreenState extends State<PainelScreen> {
 
     _lastFiltroPivo = _filtroPivo;
     _lastFiltroOperacao = _filtroOperacao;
+    _lastFiltroAnoSafra = _filtroAnoSafra;
     _lastDataInicio = _dataInicio;
     _lastDataFim = _dataFim;
 
@@ -93,30 +140,25 @@ class _PainelScreenState extends State<PainelScreen> {
   bool get _temFiltroData => _dataInicio != null || _dataFim != null;
 
   bool get _temFiltroAtivo =>
-      _filtroPivo != 'Todos' || _filtroOperacao != 'Todas' || _temFiltroData;
+      _filtroPivo != 'Todos' ||
+      _filtroOperacao != 'Todas' ||
+      _filtroAnoSafra != null ||
+      _temFiltroData;
 
   List<OperacaoExecutada> _calcularOperacoesFiltradas() {
-    // Filtro de data agora é por PLANTIO DO PIVÔ.
-    // Uma operação entra no conjunto se:
-    //  - passa nos filtros de pivô/operação, E
-    //  - o plantio da safra dela cai dentro do período (se houver filtro de data).
-    //
-    // Se o plantio do pivô está no período, TODAS as operações desse pivô
-    // entram — porque o pivô é "do período" e o contexto dele é completo.
-
-    final Set<String> pivosNoPlantioPeriodo = {};
-
-    if (_temFiltroData) {
-      for (final op in widget.service.operacoes) {
-        final plantio = op.dataPlantio;
-        if (plantio == null) continue;
-
-        if (_dataInicio != null && plantio.isBefore(_dataInicio!)) continue;
-        if (_dataFim != null && plantio.isAfter(_dataFim!)) continue;
-
-        pivosNoPlantioPeriodo.add(op.pivoNome ?? 'Sem pivô');
-      }
+    // Se o ano safra selecionado deixou de ser válido, limpa.
+    if (_filtroAnoSafra != null && !_anoSafraSelecionadoValido) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() => _filtroAnoSafra = null);
+        }
+      });
     }
+
+    final anoEfetivo =
+        (_filtroAnoSafra != null && _anoSafraSelecionadoValido)
+            ? _filtroAnoSafra
+            : null;
 
     var operacoes = widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
@@ -124,9 +166,22 @@ class _PainelScreenState extends State<PainelScreen> {
         return false;
       }
 
-      if (_temFiltroData) {
-        final nomePivo = op.pivoNome ?? 'Sem pivô';
-        if (!pivosNoPlantioPeriodo.contains(nomePivo)) return false;
+      // Filtro por ano safra
+      if (anoEfetivo != null) {
+        final ano = op.anoSafra ??
+            (op.dataPlantio != null
+                ? '${op.dataPlantio!.year}/${op.dataPlantio!.year + 1}'
+                : null);
+        if (ano != anoEfetivo) return false;
+      } else if (_temFiltroData) {
+        // Sem ano safra específico, mas com filtro de data:
+        // só entram operações cujo plantio está no período.
+        final plantio = op.dataPlantio;
+        if (plantio == null) return false;
+        if (_dataInicio != null && plantio.isBefore(_dataInicio!)) {
+          return false;
+        }
+        if (_dataFim != null && plantio.isAfter(_dataFim!)) return false;
       }
 
       return true;
@@ -307,11 +362,11 @@ class _PainelScreenState extends State<PainelScreen> {
   Map<String, dynamic> get _progressoPivos {
     if (_progressoPivosCache != null) return _progressoPivosCache!;
 
-    // PASSO 1 — prontoParaPlantio por pivô (IGNORA filtros).
+    // PASSO 1 — prontoParaPlantio por pivô, escopado ao conjunto filtrado.
     final Map<String, bool> prontoPorPivo = {};
 
     final Map<String, List<OperacaoExecutada>> todasPorPivo = {};
-    for (final op in widget.service.operacoes) {
+    for (final op in _operacoesFiltradas) {
       final pivo = op.pivoNome ?? 'Sem pivô';
       todasPorPivo.putIfAbsent(pivo, () => []).add(op);
     }
@@ -329,9 +384,6 @@ class _PainelScreenState extends State<PainelScreen> {
     });
 
     // PASSO 2 — lista exibida.
-    // Pivôs que entram: os que têm pelo menos uma operação em _operacoesFiltradas.
-    // Como o filtro de data é por plantio, uma vez que o pivô entra,
-    // mostramos TODAS as operações dele (via operacoesPivoCompleto).
     final Map<String, dynamic> resultado = {};
     final Set<String> pivosNoPeriodo = {};
 
@@ -358,21 +410,12 @@ class _PainelScreenState extends State<PainelScreen> {
         'dispensadas': 0,
       };
 
-      // Contexto completo do pivô (sem filtro de operação nem data).
-      final operacoesPivoCompleto = widget.service.operacoes
+      // Operações do pivô escopadas ao filtro vigente.
+      final operacoesPivo = _operacoesFiltradas
           .where((op) => op.pivoNome == pivoNome)
           .toList();
 
-      // Se o filtro de operação está ativo, mostramos apenas as operações
-      // que batem com o nome filtrado.
-      final operacoesPivo = operacoesPivoCompleto.where((op) {
-        if (_filtroOperacao != 'Todas' && op.operacaoNome != _filtroOperacao) {
-          return false;
-        }
-        return true;
-      }).toList();
-
-      for (final op in operacoesPivoCompleto) {
+      for (final op in operacoesPivo) {
         if (op.dataPlantio != null) {
           resultado[pivoNome]['plantio'] = op.dataPlantio;
           break;
@@ -434,8 +477,8 @@ class _PainelScreenState extends State<PainelScreen> {
       item['percentualPlanejado'] = percentualPlanejado;
       item['percentualExecutado'] = percentualConcluido + percentualAndamento;
 
-      // ANTERIOR / PRÓXIMA — usa o conjunto completo do pivô.
-      final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivoCompleto)
+      // ANTERIOR / PRÓXIMA — usa apenas as operações escopadas.
+      final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivo)
         ..sort((a, b) =>
             (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
 
@@ -530,6 +573,7 @@ class _PainelScreenState extends State<PainelScreen> {
     try {
       await widget.service.carregarOperacoes();
       _invalidarCaches();
+      _anosSafraDisponiveisCache = null;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -927,8 +971,7 @@ class _PainelScreenState extends State<PainelScreen> {
           AnimatedCrossFade(
             duration: const Duration(milliseconds: 200),
             crossFadeState: isExpanded
-                ? CrossFadeState.showFirst
-                : CrossFadeState.showSecond,
+                ? CrossFadeState.showFirst                : CrossFadeState.showSecond,
             firstChild: child,
             secondChild: const SizedBox(width: double.infinity),
           ),
@@ -938,10 +981,14 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   // ============================================================
-  // FILTROS — linha única, chips compactos
+  // FILTROS
   // ============================================================
 
   Widget _buildFiltros(List<String> pivos, List<String> operacoesLista) {
+    final anos = _anosSafraDisponiveis;
+    final anoAtualValido =
+        _filtroAnoSafra != null && anos.contains(_filtroAnoSafra);
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -953,7 +1000,11 @@ class _PainelScreenState extends State<PainelScreen> {
         children: [
           Expanded(
             child: _buildFiltroChip(
-              icone: Icons.grass_outlined,
+              leading: const Icon(
+                Icons.grass_outlined,
+                size: 13,
+                color: _neutroIcone,
+              ),
               valor: _filtroPivo,
               ativo: _filtroPivo != 'Todos',
               onTap: () => _abrirMenuFiltro(
@@ -973,7 +1024,7 @@ class _PainelScreenState extends State<PainelScreen> {
           const SizedBox(width: 6),
           Expanded(
             child: _buildFiltroChip(
-              icone: Icons.tune_outlined,
+              leading: const Text('🚜', style: TextStyle(fontSize: 13)),
               valor: _filtroOperacao,
               ativo: _filtroOperacao != 'Todas',
               onTap: () => _abrirMenuFiltro(
@@ -993,16 +1044,18 @@ class _PainelScreenState extends State<PainelScreen> {
           const SizedBox(width: 6),
           Expanded(
             child: _buildFiltroChip(
-              icone: Icons.event_outlined,
-              valor: _dataInicio != null
-                  ? _formatarDataCurta(_dataInicio!)
-                  : 'De',
-              ativo: _dataInicio != null,
-              onTap: () => _selecionarDataInicio(),
-              onClear: _dataInicio != null
+              leading: const Icon(
+                Icons.eco_outlined,
+                size: 13,
+                color: _neutroIcone,
+              ),
+              valor: anoAtualValido ? _filtroAnoSafra! : 'Safra',
+              ativo: anoAtualValido,
+              onTap: () => _abrirMenuAnoSafra(anos),
+              onClear: anoAtualValido
                   ? () {
                       setState(() {
-                        _dataInicio = null;
+                        _filtroAnoSafra = null;
                         _expandedPivos.clear();
                         _invalidarCaches();
                       });
@@ -1013,7 +1066,36 @@ class _PainelScreenState extends State<PainelScreen> {
           const SizedBox(width: 6),
           Expanded(
             child: _buildFiltroChip(
-              icone: Icons.event_available_outlined,
+              leading: const Icon(
+                Icons.event_outlined,
+                size: 13,
+                color: _neutroIcone,
+              ),
+              valor: _dataInicio != null
+                  ? _formatarDataCurta(_dataInicio!)
+                  : 'De',
+              ativo: _dataInicio != null,
+              onTap: () => _selecionarDataInicio(),
+              onClear: _dataInicio != null
+                  ? () {
+                      setState(() {
+                        _dataInicio = null;
+                        _expandedPivos.clear();
+                        _anosSafraDisponiveisCache = null;
+                        _invalidarCaches();
+                      });
+                    }
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _buildFiltroChip(
+              leading: const Icon(
+                Icons.event_available_outlined,
+                size: 13,
+                color: _neutroIcone,
+              ),
               valor: _dataFim != null
                   ? _formatarDataCurta(_dataFim!)
                   : 'Até',
@@ -1024,6 +1106,7 @@ class _PainelScreenState extends State<PainelScreen> {
                       setState(() {
                         _dataFim = null;
                         _expandedPivos.clear();
+                        _anosSafraDisponiveisCache = null;
                         _invalidarCaches();
                       });
                     }
@@ -1047,7 +1130,7 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   Widget _buildFiltroChip({
-    required IconData icone,
+    required Widget leading,
     required String valor,
     required bool ativo,
     required VoidCallback onTap,
@@ -1067,11 +1150,10 @@ class _PainelScreenState extends State<PainelScreen> {
         ),
         child: Row(
           children: [
-            Icon(
-              icone,
-              size: 13,
-              color: ativo ? _destaque : _neutroIcone,
-            ),
+            if (ativo)
+              Icon(Icons.circle, size: 8, color: _destaque)
+            else
+              leading,
             const SizedBox(width: 5),
             Expanded(
               child: Text(
@@ -1146,6 +1228,7 @@ class _PainelScreenState extends State<PainelScreen> {
           _dataFim = picked;
         }
         _expandedPivos.clear();
+        _anosSafraDisponiveisCache = null;
         _invalidarCaches();
       });
     }
@@ -1166,9 +1249,114 @@ class _PainelScreenState extends State<PainelScreen> {
           _dataInicio = picked;
         }
         _expandedPivos.clear();
+        _anosSafraDisponiveisCache = null;
         _invalidarCaches();
       });
     }
+  }
+
+  Future<void> _abrirMenuAnoSafra(List<String> anos) async {
+    if (anos.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Nenhuma safra no período selecionado'),
+        ),
+      );
+      return;
+    }
+
+    final selecionado = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: _neutroBorda,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Ano safra',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: _neutroTexto,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Divider(height: 0),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: anos.length + 1,
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      final isSel = _filtroAnoSafra == null;
+                      return ListTile(
+                        dense: true,
+                        title: Text(
+                          'Todas as safras',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: isSel ? _destaque : _neutroTexto,
+                            fontWeight:
+                                isSel ? FontWeight.w600 : FontWeight.w400,
+                          ),
+                        ),
+                        trailing: isSel
+                            ? const Icon(Icons.check,
+                                size: 18, color: _destaque)
+                            : null,
+                        onTap: () => Navigator.pop(context, '__TODAS__'),
+                      );
+                    }
+                    final ano = anos[index - 1];
+                    final isSel = ano == _filtroAnoSafra;
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        ano,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: isSel ? _destaque : _neutroTexto,
+                          fontWeight:
+                              isSel ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                      ),
+                      trailing: isSel
+                          ? const Icon(Icons.check,
+                              size: 18, color: _destaque)
+                          : null,
+                      onTap: () => Navigator.pop(context, ano),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selecionado == null) return;
+
+    setState(() {
+      _filtroAnoSafra = (selecionado == '__TODAS__') ? null : selecionado;
+      _expandedPivos.clear();
+      _invalidarCaches();
+    });
   }
 
   Future<void> _abrirMenuFiltro({
