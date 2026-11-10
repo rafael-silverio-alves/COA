@@ -109,8 +109,6 @@ class SupabaseService {
     });
   }
 
-  /// Cria um pivô e retorna o id gerado.
-  /// Usado quando é preciso encadear a criação de uma safra logo em seguida.
   Future<String> addPivoRetornandoId({
     required String nome,
     required String? localizacao,
@@ -179,7 +177,6 @@ class SupabaseService {
     }
   }
 
-  /// Busca todas as safras de um pivô (com join em pivos e culturas).
   Future<List<Safra>> getSafrasDoPivo(String pivoId) async {
     try {
       final response = await _supabase
@@ -195,7 +192,6 @@ class SupabaseService {
     }
   }
 
-  /// Atualiza data_plantio e ano_safra de uma safra.
   Future<void> updateSafra({
     required String safraId,
     required DateTime dataPlantio,
@@ -230,6 +226,7 @@ class SupabaseService {
 
         print('📄 Carregando página ${page + 1} (registros $from a $to)...');
 
+        // ===== ALTERAÇÃO: join com familias_operacao =====
         final response = await _supabase
             .from('operacoes_executadas')
             .select('''
@@ -238,7 +235,10 @@ class SupabaseService {
                 *,
                 pivos!inner (*)
               ),
-              operacoes_padrao!inner (*)
+              operacoes_padrao!inner (
+                *,
+                familias_operacao!inner (*)
+              )
             ''')
             .range(from, to);
 
@@ -272,6 +272,8 @@ class SupabaseService {
           final safraData = data['safras'];
           final pivoData = safraData?['pivos'];
           final opPadraoData = data['operacoes_padrao'];
+          // ===== ALTERAÇÃO: dados da família =====
+          final familiaData = opPadraoData?['familias_operacao'];
 
           if (safraData == null || opPadraoData == null) {
             operacoesIgnoradas++;
@@ -282,8 +284,6 @@ class SupabaseService {
               ? DateTime.tryParse(safraData['data_plantio'])
               : null;
 
-          // NOVO: lê o ano_safra direto do banco. Se vier nulo, deriva
-          // a partir da data de plantio no formato "YYYY/YYYY+1".
           final anoSafraBruto = safraData['ano_safra'] as String?;
           final anoSafra = (anoSafraBruto != null && anoSafraBruto.isNotEmpty)
               ? anoSafraBruto
@@ -347,7 +347,7 @@ class SupabaseService {
               _normalizarString(pivoData?['nome'] as String? ?? 'Sem Pivô');
           op.areaTotal = (pivoData?['area_total'] as num?)?.toDouble() ?? 0;
           op.dataPlantio = dataPlantio;
-          op.anoSafra = anoSafra; // NOVO
+          op.anoSafra = anoSafra;
           op.operacaoNome =
               _normalizarString(opPadraoData['nome'] as String? ?? 'Sem nome');
           op.rendimentoHaDia =
@@ -356,6 +356,14 @@ class SupabaseService {
           op.numeroPassadas = opPadraoData['numero_passadas'] as int? ?? 1;
           op.intervaloEntrePassadas =
               opPadraoData['intervalo_entre_passadas'] as int? ?? 0;
+
+          // ===== ALTERAÇÃO: preencher família =====
+          op.familiaId = familiaData?['id'] as String?;
+          op.familiaNome = familiaData?['nome'] as String?;
+          op.rendimentoMedioTrator =
+              (familiaData?['rendimento_medio_trator'] as num?)?.toDouble();
+          op.numeroTratoresFamilia =
+              familiaData?['numero_tratores'] as int?;
 
           operacoes.add(op);
         } catch (e) {
@@ -369,7 +377,6 @@ class SupabaseService {
         print('⚠️ Operações ignoradas: $operacoesIgnoradas');
       }
 
-      // DIAGNÓSTICO FINAL
       print('');
       print('📊 RESUMO FINAL DO CARREGAMENTO:');
       print('   Total de registros no Supabase: ${todasOperacoes.length}');
@@ -422,7 +429,6 @@ class SupabaseService {
     }
   }
 
-  // ========== CADASTRAR PLANTIO ==========
   Future<void> cadastrarPlantio({
     required String pivoId,
     required String culturaId,

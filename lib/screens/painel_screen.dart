@@ -76,7 +76,66 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   // ============================================================
-  // ANOS SAFRA DISPONÍVEIS (respeitando o filtro de data)
+  // HELPERS DE NOME (case-insensitive, sem acento, sem ordinal)
+  // ============================================================
+  String _normalizarNome(String texto) {
+    var t = texto;
+
+    // Lowercase e trim
+    t = t.toLowerCase().trim();
+
+    // Substitui NBSP e outros espaços exóticos por espaço normal
+    t = t.replaceAll(
+      RegExp(r'[\u00A0\u2000-\u200B\u202F\u205F\u3000]'),
+      ' ',
+    );
+
+    // Remove acentos
+    const comAcentos = 'áàãâäéèêëíìîïóòõôöúùûüç';
+    const semAcentos = 'aaaaaeeeeiiiiooooouuuuc';
+    for (int i = 0; i < comAcentos.length; i++) {
+      t = t.replaceAll(comAcentos[i], semAcentos[i]);
+    }
+
+    // Remove ª e º (ordinais) — evita "1ª" virar "13"
+    t = t.replaceAll('ª', '').replaceAll('º', '');
+
+    // Remove "a" após dígito quando é sufixo ordinal ("3a" → "3")
+    t = t.replaceAll(RegExp(r'(\d)a(?=\s|$)'), r'$1');
+
+    // Colapsa espaços múltiplos
+    t = t.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    return t;
+  }
+
+  /// Retorna true se o nome for "3ª subsolagem", "3 subsolagem",
+  /// "terceira subsolagem", "subsolagem 3", etc.
+  bool _ehTerceiraSubsolagem(String? nome) {
+    if (nome == null) return false;
+    final n = _normalizarNome(nome);
+    if (!n.contains('subsolagem')) return false;
+
+    // "3 subsolagem" ou "terceira subsolagem" no começo
+    if (RegExp(r'^3\s+subsolagem').hasMatch(n)) return true;
+    if (RegExp(r'^terceira\s+subsolagem').hasMatch(n)) return true;
+
+    // "subsolagem 3" ou "subsolagem terceira" no fim
+    if (RegExp(r'subsolagem\s+3\b').hasMatch(n)) return true;
+    if (RegExp(r'subsolagem\s+terceira\b').hasMatch(n)) return true;
+
+    return false;
+  }
+
+  /// Retorna true se o nome for "plantio", "plantio direto", etc.
+  bool _ehPlantio(String? nome) {
+    if (nome == null) return false;
+    final n = _normalizarNome(nome);
+    return n == 'plantio' || n.startsWith('plantio ');
+  }
+
+  // ============================================================
+  // ANOS SAFRA DISPONÍVEIS
   // ============================================================
   List<String> get _anosSafraDisponiveis {
     if (_anosSafraDisponiveisCache != null &&
@@ -153,10 +212,9 @@ class _PainelScreenState extends State<PainelScreen> {
       });
     }
 
-    final anoEfetivo =
-        (_filtroAnoSafra != null && _anoSafraSelecionadoValido)
-            ? _filtroAnoSafra
-            : null;
+    final anoEfetivo = (_filtroAnoSafra != null && _anoSafraSelecionadoValido)
+        ? _filtroAnoSafra
+        : null;
 
     var operacoes = widget.service.operacoes.where((op) {
       if (_filtroPivo != 'Todos' && op.pivoNome != _filtroPivo) return false;
@@ -224,6 +282,45 @@ class _PainelScreenState extends State<PainelScreen> {
     return resumo;
   }
 
+  // ============================================================
+  // REGRA ÚNICA de "pronto para plantio".
+  //  - 3ª subsolagem concluída ou dispensada
+  //  - nenhuma operação em andamento ou atrasada
+  //  - plantio NÃO concluído
+  // ============================================================
+  bool _calcProntoParaPlantio(List<OperacaoExecutada> ops) {
+    if (ops.isEmpty) return false;
+
+    // Se o plantio já foi concluído, o pivô não é mais "pronto".
+    final plantioConcluido = ops.any(
+      (op) => _ehPlantio(op.operacaoNome) && op.status == 'concluida',
+    );
+    if (plantioConcluido) return false;
+
+    // Precisa ter a 3ª subsolagem concluída ou dispensada.
+    OperacaoExecutada? terceiraSubsolagem;
+    for (final op in ops) {
+      if (_ehTerceiraSubsolagem(op.operacaoNome)) {
+        terceiraSubsolagem = op;
+        break;
+      }
+    }
+    if (terceiraSubsolagem == null) return false;
+    if (terceiraSubsolagem.status != 'concluida' &&
+        terceiraSubsolagem.status != 'dispensada') {
+      return false;
+    }
+
+    // Nenhuma operação em andamento ou atrasada.
+    for (final op in ops) {
+      if (op.status == 'em_andamento' || op.status == 'atrasada') {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   Map<String, dynamic> get _insights {
     if (_insightsCache != null) return _insightsCache!;
 
@@ -234,7 +331,7 @@ class _PainelScreenState extends State<PainelScreen> {
 
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada') continue;
-      final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
+      final area = op.areaTotalComPassadas;
 
       if (op.status == 'concluida') {
         totalRealizado += area;
@@ -245,107 +342,180 @@ class _PainelScreenState extends State<PainelScreen> {
       }
     }
 
-    final Map<String, double> rendimentoPorOperacao = {};
+    final Set<String> familiasComTrator = {};
+    double capacidadeTotal = 0;
     for (var op in _operacoesFiltradas) {
       if (op.status == 'dispensada' || op.status == 'concluida') continue;
-      final rendimento = op.rendimentoHaDia ?? 0;
-      if (rendimento <= 0) continue;
-      final nomeOp = op.operacaoNome ?? 'Sem nome';
-      rendimentoPorOperacao.putIfAbsent(nomeOp, () => rendimento);
+      if (!op.usaTrator) continue;
+      final fid = op.familiaEfetivaId;
+      if (familiasComTrator.contains(fid)) continue;
+      familiasComTrator.add(fid);
+      capacidadeTotal += op.rendimentoEfetivoTrator * op.tratoresEfetivos;
     }
 
-    double capacidadeTotal;
-    if (_filtroPivo != 'Todos') {
-      capacidadeTotal = rendimentoPorOperacao.isEmpty
-          ? 0
-          : rendimentoPorOperacao.values.reduce(min);
-    } else {
-      capacidadeTotal =
-          rendimentoPorOperacao.values.fold<double>(0, (a, b) => a + b);
-    }
-
-    final Map<String, List<OperacaoExecutada>> opsPorPivo = {};
-    for (var op in _operacoesFiltradas) {
-      if (op.status == 'dispensada' || op.status == 'concluida') continue;
-      final pivo = op.pivoNome ?? 'Sem pivô';
-      opsPorPivo.putIfAbsent(pivo, () => []).add(op);
-    }
-
-    final hoje = DateTime.now();
-    DateTime? dataFimMaisTardia;
+    int diasResultado = 0;
     int pivosEmParalelo = 0;
 
-    for (var entry in opsPorPivo.entries) {
-      final ops = entry.value;
+    if (_filtroPivo != 'Todos') {
+      final Set<String> pivosPend = {};
+      final List<OperacaoExecutada> opsPend = [];
 
-      ops.sort((a, b) =>
+      for (var op in _operacoesFiltradas) {
+        if (op.status == 'dispensada' || op.status == 'concluida') continue;
+        pivosPend.add(op.pivoNome ?? 'Sem pivô');
+        opsPend.add(op);
+      }
+
+      opsPend.sort((a, b) =>
           (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
 
-      if (ops.isEmpty) continue;
-      pivosEmParalelo++;
-
-      DateTime? livreEm;
-      for (var op in ops) {
-        if (op.status != 'em_andamento') continue;
-        if (op.dataInicioPrimeira == null) continue;
-        final rendimento = op.rendimentoHaDia ?? 0;
-        if (rendimento <= 0) continue;
-        final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
-        final duracao = area / rendimento;
-        final fimPrevisto =
-            op.dataInicioPrimeira!.add(Duration(days: duracao.ceil()));
-        if (livreEm == null || fimPrevisto.isAfter(livreEm)) {
-          livreEm = fimPrevisto;
-        }
+      for (var op in opsPend) {
+        diasResultado += op.duracaoPuraDias;
+      }
+      pivosEmParalelo = pivosPend.length;
+    } else {
+      final Map<String, List<OperacaoExecutada>> opsPorPivo = {};
+      for (var op in _operacoesFiltradas) {
+        if (op.status == 'dispensada' || op.status == 'concluida') continue;
+        final pivo = op.pivoNome ?? 'Sem pivô';
+        opsPorPivo.putIfAbsent(pivo, () => []).add(op);
       }
 
-      for (var op in ops) {
-        final rendimento = op.rendimentoHaDia ?? 0;
-        if (rendimento <= 0) continue;
+      for (var ops in opsPorPivo.values) {
+        ops.sort((a, b) =>
+            (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
+      }
 
-        final area = (op.areaTotal ?? 0) * (op.numeroPassadas ?? 1);
-        final duracaoDias = (area / rendimento).ceil();
+      pivosEmParalelo = opsPorPivo.length;
 
-        if (op.status == 'em_andamento' && op.dataInicioPrimeira != null) {
-          final fim =
-              op.dataInicioPrimeira!.add(Duration(days: duracaoDias));
-          if (dataFimMaisTardia == null || fim.isAfter(dataFimMaisTardia)) {
-            dataFimMaisTardia = fim;
-          }
-          continue;
+      if (opsPorPivo.isEmpty) {
+        diasResultado = 0;
+      } else {
+        final Map<String, int> idxAtualPorPivo = {};
+        final Map<String, double> areaRestantePorPivo = {};
+        final Map<String, bool> pivoConcluido = {};
+        final Map<String, DateTime?> inicioSemTrator = {};
+
+        final hoje = DateTime.now();
+        DateTime diaCorrente = DateTime(hoje.year, hoje.month, hoje.day);
+
+        opsPorPivo.forEach((pivo, ops) {
+          idxAtualPorPivo[pivo] = 0;
+          areaRestantePorPivo[pivo] = ops[0].areaTotalComPassadas;
+          inicioSemTrator[pivo] = null;
+          pivoConcluido[pivo] = false;
+        });
+
+        int diasSeguranca = 0;
+        const maxDias = 3650;
+
+        while (pivoConcluido.values.any((c) => c == false) &&
+            diasSeguranca < maxDias) {
+          diasSeguranca++;
+
+          final Map<String, OperacaoExecutada> demandantesComTrator = {};
+          final Map<String, OperacaoExecutada> demandantesSemTrator = {};
+
+          opsPorPivo.forEach((pivo, ops) {
+            if (pivoConcluido[pivo] == true) return;
+            final idx = idxAtualPorPivo[pivo]!;
+            if (idx >= ops.length) {
+              pivoConcluido[pivo] = true;
+              return;
+            }
+            final op = ops[idx];
+            final inicioJanela = op.getDataInicioJanelaCalculada();
+            final inicioDia = DateTime(
+              inicioJanela.year,
+              inicioJanela.month,
+              inicioJanela.day,
+            );
+            if (diaCorrente.isBefore(inicioDia)) return;
+
+            if (op.usaTrator) {
+              demandantesComTrator[pivo] = op;
+            } else {
+              inicioSemTrator[pivo] ??= diaCorrente;
+              demandantesSemTrator[pivo] = op;
+            }
+          });
+
+          final Map<String, double> avancoPorPivo = {};
+
+          final Map<String, List<String>> pivosPorFamilia = {};
+          demandantesComTrator.forEach((pivo, op) {
+            pivosPorFamilia
+                .putIfAbsent(op.familiaEfetivaId, () => [])
+                .add(pivo);
+          });
+
+          pivosPorFamilia.forEach((_, pivosDaFamilia) {
+            final opRef = demandantesComTrator[pivosDaFamilia.first]!;
+            final capacidadeDia =
+                opRef.rendimentoEfetivoTrator * opRef.tratoresEfetivos;
+            if (capacidadeDia <= 0) return;
+
+            double demandaTotal = 0;
+            for (var p in pivosDaFamilia) {
+              demandaTotal += areaRestantePorPivo[p]!;
+            }
+            if (demandaTotal <= 0) return;
+
+            for (var p in pivosDaFamilia) {
+              final areaRest = areaRestantePorPivo[p]!;
+              avancoPorPivo[p] = capacidadeDia * (areaRest / demandaTotal);
+            }
+          });
+
+          avancoPorPivo.forEach((pivo, avancou) {
+            if (avancou <= 0) return;
+            final areaAntes = areaRestantePorPivo[pivo]!;
+            final areaDepois = areaAntes - avancou;
+            areaRestantePorPivo[pivo] = areaDepois;
+
+            if (areaDepois <= 0.0001) {
+              idxAtualPorPivo[pivo] = idxAtualPorPivo[pivo]! + 1;
+              final idx = idxAtualPorPivo[pivo]!;
+              final ops = opsPorPivo[pivo]!;
+              if (idx >= ops.length) {
+                pivoConcluido[pivo] = true;
+              } else {
+                areaRestantePorPivo[pivo] = ops[idx].areaTotalComPassadas;
+                inicioSemTrator[pivo] = null;
+              }
+            }
+          });
+
+          demandantesSemTrator.forEach((pivo, op) {
+            final inicioReal = inicioSemTrator[pivo]!;
+            final diasOcupados = diaCorrente.difference(inicioReal).inDays;
+            final duracao = op.duracaoPuraDias;
+            if (diasOcupados >= duracao) {
+              idxAtualPorPivo[pivo] = idxAtualPorPivo[pivo]! + 1;
+              final idx = idxAtualPorPivo[pivo]!;
+              final ops = opsPorPivo[pivo]!;
+              if (idx >= ops.length) {
+                pivoConcluido[pivo] = true;
+              } else {
+                areaRestantePorPivo[pivo] = ops[idx].areaTotalComPassadas;
+                inicioSemTrator[pivo] = null;
+              }
+            }
+          });
+
+          diaCorrente = diaCorrente.add(const Duration(days: 1));
         }
 
-        final inicioJanela = op.getDataInicioJanelaCalculada();
-
-        DateTime inicioReal;
-        if (livreEm == null) {
-          inicioReal = inicioJanela;
-        } else {
-          inicioReal =
-              livreEm.isAfter(inicioJanela) ? livreEm : inicioJanela;
-        }
-
-        if (inicioReal.isBefore(hoje)) {
-          inicioReal = hoje;
-        }
-
-        final fimReal = inicioReal.add(Duration(days: duracaoDias));
-        livreEm = fimReal;
-
-        if (dataFimMaisTardia == null || fimReal.isAfter(dataFimMaisTardia)) {
-          dataFimMaisTardia = fimReal;
-        }
+        final diasTotais = diaCorrente.difference(hoje).inDays;
+        diasResultado = diasTotais < 0 ? 0 : diasTotais;
       }
     }
-
-    final diasAExecutar = dataFimMaisTardia == null
-        ? 0
-        : dataFimMaisTardia.difference(hoje).inDays;
 
     _insightsCache = {
       'totalRealizado': totalRealizado,
       'totalAExecutar': totalAExecutar,
-      'diasAExecutar': diasAExecutar < 0 ? 0 : diasAExecutar,
+      'diasAExecutar': diasResultado,
+      'diasMaquina': diasResultado,
       'capacidadeTotal': capacidadeTotal,
       'operacoesConcluidas': operacoesConcluidas,
       'operacoesPendentes': operacoesPendentes,
@@ -357,35 +527,49 @@ class _PainelScreenState extends State<PainelScreen> {
   Map<String, dynamic> get _progressoPivos {
     if (_progressoPivosCache != null) return _progressoPivosCache!;
 
-    final Map<String, bool> prontoPorPivo = {};
-
+    // Agrupa operações por pivô
     final Map<String, List<OperacaoExecutada>> todasPorPivo = {};
     for (final op in _operacoesFiltradas) {
       final pivo = op.pivoNome ?? 'Sem pivô';
       todasPorPivo.putIfAbsent(pivo, () => []).add(op);
     }
 
+    // Filtro: esconde pivôs cujo plantio passou há mais de 10 dias.
+    // Plantio nulo NÃO esconde (pivô ainda não plantado).
+    final hoje = DateTime.now();
+    final dataLimite = DateTime(
+      hoje.year,
+      hoje.month,
+      hoje.day,
+    ).subtract(const Duration(days: 10));
+
+    final pivosValidos = <String>[];
     todasPorPivo.forEach((pivo, ops) {
-      if (ops.isEmpty) {
-        prontoPorPivo[pivo] = false;
+      DateTime? plantio;
+      for (final op in ops) {
+        if (op.dataPlantio != null) {
+          plantio = op.dataPlantio;
+          break;
+        }
+      }
+      if (plantio != null &&
+          DateTime(plantio.year, plantio.month, plantio.day)
+              .isBefore(dataLimite)) {
         return;
       }
-      final todasFinalizadas = ops.every(
-        (op) => op.status == 'concluida' || op.status == 'dispensada',
-      );
-      final temAndamento = ops.any((op) => op.status == 'em_andamento');
-      prontoPorPivo[pivo] = todasFinalizadas && !temAndamento;
+      pivosValidos.add(pivo);
     });
 
-    final Map<String, dynamic> resultado = {};
-    final Set<String> pivosNoPeriodo = {};
-
-    for (final op in _operacoesFiltradas) {
-      final nomePivo = op.pivoNome ?? 'Sem pivô';
-      pivosNoPeriodo.add(nomePivo);
+    // Pronto para plantio por pivô
+    final Map<String, bool> prontoPorPivo = {};
+    for (final pivo in pivosValidos) {
+      prontoPorPivo[pivo] = _calcProntoParaPlantio(todasPorPivo[pivo]!);
     }
 
-    for (final pivoNome in pivosNoPeriodo) {
+    // Monta resultado por pivô
+    final Map<String, dynamic> resultado = {};
+
+    for (final pivoNome in pivosValidos) {
       resultado[pivoNome] = {
         'nome': pivoNome,
         'plantio': null,
@@ -403,9 +587,7 @@ class _PainelScreenState extends State<PainelScreen> {
         'dispensadas': 0,
       };
 
-      final operacoesPivo = _operacoesFiltradas
-          .where((op) => op.pivoNome == pivoNome)
-          .toList();
+      final operacoesPivo = todasPorPivo[pivoNome]!;
 
       for (final op in operacoesPivo) {
         if (op.dataPlantio != null) {
@@ -469,14 +651,14 @@ class _PainelScreenState extends State<PainelScreen> {
       item['percentualPlanejado'] = percentualPlanejado;
       item['percentualExecutado'] = percentualConcluido + percentualAndamento;
 
+      // Anterior / Próxima
       final opsOrdenadas = List<OperacaoExecutada>.from(operacoesPivo)
         ..sort((a, b) =>
             (a.diasAntesPlantio ?? 0).compareTo(b.diasAntesPlantio ?? 0));
 
       bool concluida(OperacaoExecutada op) => op.status == 'concluida';
       bool dispensada(OperacaoExecutada op) => op.status == 'dispensada';
-      bool pendente(OperacaoExecutada op) =>
-          !concluida(op) && !dispensada(op);
+      bool pendente(OperacaoExecutada op) => !concluida(op) && !dispensada(op);
 
       OperacaoExecutada? anterior;
       for (int i = opsOrdenadas.length - 1; i >= 0; i--) {
@@ -504,8 +686,13 @@ class _PainelScreenState extends State<PainelScreen> {
       item['prontoParaPlantio'] = prontoPorPivo[pivoNome] ?? false;
     }
 
+    // Ordenação final: prontos primeiro, depois por data de plantio
     final lista = resultado.values.toList();
     lista.sort((a, b) {
+      final pa = a['prontoParaPlantio'] == true ? 0 : 1;
+      final pb = b['prontoParaPlantio'] == true ? 0 : 1;
+      if (pa != pb) return pa.compareTo(pb);
+
       final da = a['plantio'] as DateTime?;
       final db = b['plantio'] as DateTime?;
       if (da == null && db == null) return 0;
@@ -519,6 +706,10 @@ class _PainelScreenState extends State<PainelScreen> {
   }
 
   List<Map<String, dynamic>> get _pivosProntosParaPlantio {
+    if (_filtroOperacao != 'Todas') {
+      return const [];
+    }
+
     final lista = _progressoPivos['lista'] as List;
     final prontos = <Map<String, dynamic>>[];
     for (var item in lista) {
@@ -840,20 +1031,20 @@ class _PainelScreenState extends State<PainelScreen> {
                 const SizedBox(height: 16),
                 _buildResumoPlantios(),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Concluído', 'Concluídas',
-                    _cores['Concluído']!),
+                _buildSecaoOperacoes(
+                    'Concluído', 'Concluídas', _cores['Concluído']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Em andamento', 'Em andamento',
-                    _cores['Em andamento']!),
+                _buildSecaoOperacoes(
+                    'Em andamento', 'Em andamento', _cores['Em andamento']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Planejada', 'Planejadas',
-                    _cores['Planejada']!),
+                _buildSecaoOperacoes(
+                    'Planejada', 'Planejadas', _cores['Planejada']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Atrasada', 'Atrasadas',
-                    _cores['Atrasada']!),
+                _buildSecaoOperacoes(
+                    'Atrasada', 'Atrasadas', _cores['Atrasada']!),
                 const SizedBox(height: 16),
-                _buildSecaoOperacoes('Dispensada', 'Dispensadas',
-                    _cores['Dispensada']!),
+                _buildSecaoOperacoes(
+                    'Dispensada', 'Dispensadas', _cores['Dispensada']!),
               ],
             ),
           ),
@@ -1022,8 +1213,7 @@ class _PainelScreenState extends State<PainelScreen> {
           Expanded(
             child: _buildFiltroChip(
               leading: const Text('🚜', style: TextStyle(fontSize: 13)),
-              valor:
-                  _filtroOperacao != 'Todas' ? _filtroOperacao : 'Operações',
+              valor: _filtroOperacao != 'Todas' ? _filtroOperacao : 'Operações',
               ativo: _filtroOperacao != 'Todas',
               onTap: () => _abrirMenuFiltro(
                 titulo: 'Operação',
@@ -1069,9 +1259,8 @@ class _PainelScreenState extends State<PainelScreen> {
                 size: 13,
                 color: _neutroIcone,
               ),
-              valor: _dataInicio != null
-                  ? _formatarDataCurta(_dataInicio!)
-                  : 'De',
+              valor:
+                  _dataInicio != null ? _formatarDataCurta(_dataInicio!) : 'De',
               ativo: _dataInicio != null,
               onTap: () => _selecionarDataInicio(),
               onClear: _dataInicio != null
@@ -1094,9 +1283,7 @@ class _PainelScreenState extends State<PainelScreen> {
                 size: 13,
                 color: _neutroIcone,
               ),
-              valor: _dataFim != null
-                  ? _formatarDataCurta(_dataFim!)
-                  : 'Até',
+              valor: _dataFim != null ? _formatarDataCurta(_dataFim!) : 'Até',
               ativo: _dataFim != null,
               onTap: () => _selecionarDataFim(),
               onClear: _dataFim != null
@@ -1328,13 +1515,11 @@ class _PainelScreenState extends State<PainelScreen> {
                         style: TextStyle(
                           fontSize: 14,
                           color: isSel ? _destaque : _neutroTexto,
-                          fontWeight:
-                              isSel ? FontWeight.w600 : FontWeight.w400,
+                          fontWeight: isSel ? FontWeight.w600 : FontWeight.w400,
                         ),
                       ),
                       trailing: isSel
-                          ? const Icon(Icons.check,
-                              size: 18, color: _destaque)
+                          ? const Icon(Icons.check, size: 18, color: _destaque)
                           : null,
                       onTap: () => Navigator.pop(context, ano),
                     );
@@ -1407,9 +1592,7 @@ class _PainelScreenState extends State<PainelScreen> {
                         opcao,
                         style: TextStyle(
                           fontSize: 14,
-                          color: estaSelecionado
-                              ? _destaque
-                              : _neutroTexto,
+                          color: estaSelecionado ? _destaque : _neutroTexto,
                           fontWeight: estaSelecionado
                               ? FontWeight.w600
                               : FontWeight.w400,
@@ -1568,6 +1751,7 @@ class _PainelScreenState extends State<PainelScreen> {
   Widget _buildInsights(Map<String, dynamic> insights) {
     final pivos = insights['pivosEmParalelo'] as int;
     final capacidade = insights['capacidadeTotal'] as double;
+    final diasMaquina = insights['diasMaquina'] as int? ?? 0;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -1604,13 +1788,13 @@ class _PainelScreenState extends State<PainelScreen> {
             children: [
               Expanded(
                 child: _insightCard(
-                  icon: Icons.calendar_today_outlined,
+                  icon: Icons.timer_outlined,
                   titulo: 'Tempo Necessário',
-                  valor: '${insights['diasAExecutar']} dias',
+                  valor: '$diasMaquina dias',
                   cor: _cores['Em andamento']!,
                   subtitle: pivos == 0
                       ? 'Sem operações pendentes'
-                      : '$pivos pivô(s) em paralelo',
+                      : '$pivos pivô(s) com operações pendentes',
                 ),
               ),
               const SizedBox(width: 12),
@@ -1748,6 +1932,7 @@ class _PainelScreenState extends State<PainelScreen> {
                 final dataPlantio = item['plantio'] as DateTime?;
                 final anterior = item['anterior'] as String?;
                 final proxima = item['proxima'] as String?;
+                final pronto = item['prontoParaPlantio'] == true;
 
                 return Column(
                   children: [
@@ -1778,7 +1963,6 @@ class _PainelScreenState extends State<PainelScreen> {
                                   size: 20,
                                 ),
                                 const SizedBox(width: 8),
-
                                 Expanded(
                                   flex: 2,
                                   child: Text(
@@ -1795,7 +1979,6 @@ class _PainelScreenState extends State<PainelScreen> {
                                     ),
                                   ),
                                 ),
-
                                 const SizedBox(width: 4),
                                 Text(
                                   '—',
@@ -1805,21 +1988,46 @@ class _PainelScreenState extends State<PainelScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 4),
-
                                 Expanded(
                                   flex: 3,
-                                  child: Text(
-                                    pivoNome,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: _neutroTexto,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
+                                  child: Column(
+                                    children: [
+                                      Text(
+                                        pivoNome,
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: _neutroTexto,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      if (pronto) ...[
+                                        const SizedBox(height: 2),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: _cores['Concluído']!
+                                                .withOpacity(0.15),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            'Pronto para plantio',
+                                            style: TextStyle(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w600,
+                                              color: _cores['Concluído'],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
-
                                 const SizedBox(width: 4),
                                 Text(
                                   '—',
@@ -1829,7 +2037,6 @@ class _PainelScreenState extends State<PainelScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 4),
-
                                 Expanded(
                                   flex: 2,
                                   child: Text(
@@ -1846,13 +2053,10 @@ class _PainelScreenState extends State<PainelScreen> {
                                     ),
                                   ),
                                 ),
-
                                 const SizedBox(width: 52),
                               ],
                             ),
-
                             const SizedBox(height: 6),
-
                             Text(
                               '$concluidasCount de $operacoesExecutaveis concluídas · '
                               '$andamentoCount em andamento · '
@@ -1865,7 +2069,6 @@ class _PainelScreenState extends State<PainelScreen> {
                                 color: _neutroTextoSuave,
                               ),
                             ),
-
                             if (dataPlantio != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 2),
@@ -2266,9 +2469,9 @@ class _PainelScreenState extends State<PainelScreen> {
                         children: [
                           InkWell(
                             onTap: () => setState(
-                              () => _expandedPivos[
-                                      '${tituloPlural}_$pivoNome'] =
-                                  !isExpandedPivo,
+                              () =>
+                                  _expandedPivos['${tituloPlural}_$pivoNome'] =
+                                      !isExpandedPivo,
                             ),
                             child: Container(
                               padding: const EdgeInsets.symmetric(
@@ -2441,8 +2644,7 @@ class _PainelScreenState extends State<PainelScreen> {
                         Icons.speed_outlined,
                         '${op.rendimentoHaDia?.toStringAsFixed(1)} ha/dia',
                       ),
-                      if (op.status != 'dispensada' &&
-                          op.status != 'concluida')
+                      if (op.status != 'dispensada' && op.status != 'concluida')
                         _infoNeutro(Icons.timer_outlined, tempoPrevisto),
                     ],
                   ),
